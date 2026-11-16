@@ -57,8 +57,13 @@ def apply_budget_to_current_week(db: Session, settings: Settings, now: datetime 
     Earlier weeks keep the budget they had, so history stays accurate.
     """
     week_start = current_week_start(settings, now)
-    for week in db.scalars(select(BudgetWeek).where(BudgetWeek.week_start == week_start)).all():
-        week.starting_budget_cents = to_cents(settings.weekly_budget)
+    # Make sure both ledgers' week records exist BEFORE setting the budget.
+    # Otherwise a page loading at the same moment could create the week from
+    # the old setting just after this ran, and the change would be lost.
+    for simulated in (False, True):
+        get_or_create_week(db, settings, week_start, simulated)
+    db.execute(update(BudgetWeek).where(BudgetWeek.week_start == week_start)
+               .values(starting_budget_cents=to_cents(settings.weekly_budget)))
     db.commit()
 
 

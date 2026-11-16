@@ -8,3 +8,6 @@ data/
 node_modules/
 dist/
 .env
+
+# Private evaluation photo sets
+backend/eval/*/

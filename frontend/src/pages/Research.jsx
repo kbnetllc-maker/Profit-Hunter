@@ -128,7 +128,7 @@ export default function Research({ goTo, param }) {
           {page && (
             <p className="hint">
               {[page.brand, page.model, page.size, page.condition].filter(Boolean).join(" · ") || "No details entered."}
-              {" "}Identity {page.manually_confirmed ? "confirmed by you" : "not confirmed"}. Valued for resale on <b>{page.marketplace}</b>, comparing <b>{page.price_basis}</b>.
+              {" "}Identity {page.identity.confirmed ? "confirmed by you" : "not confirmed"} (<button type="button" className="link" onClick={() => goTo("identify", page.id)}>photos and confirmation</button>). Valued for resale on <b>{page.marketplace}</b>, comparing <b>{page.price_basis}</b>.
             </p>
           )}
         </section>
@@ -156,7 +156,7 @@ export default function Research({ goTo, param }) {
                   <div><span>A. Lowest credible comparable</span><b>{usd(v.lowest_credible_price)}</b></div>
                   <div><span>B. Competitive listing price</span><b>{usd(v.competitive_listing_price)}</b></div>
                   <div><span>C. Conservative expected sale price</span><b className="ok-text">{usd(v.expected_sale_price)}</b></div>
-                  <div><span>Evidence</span><b>{v.evidence_quality}</b><span>{v.sold_count} sold · {v.active_count} for sale</span></div>
+                  <div><span>Evidence</span><b>{v.evidence_quality}</b><span>{v.sold_count} sold · {v.active_count} for sale · {v.buy_grade_count} BUY grade</span></div>
                 </div>
                 <ul className="checks">{v.steps.map((s) => <li key={s}>{s}</li>)}</ul>
                 <ul className="reasons">{v.warnings.map((w) => <li key={w} className="warn-text">⚠ {w}</li>)}</ul>
@@ -196,7 +196,7 @@ export default function Research({ goTo, param }) {
                         <td className="num">{c.shipping_price === null ? "unknown" : usd(c.shipping_price)}</td>
                         <td className="num">{c.match_confidence_pct}%</td>
                         <td className="nowrap">{c.date_observed}</td>
-                        <td><span className={`tag ${c.used ? "buy" : "skip"}`}>{c.used ? "USED" : "NOT USED"}</span><div className="hint">{c.verdict}</div></td>
+                        <td><span className={`tag ${c.used ? "buy" : "skip"}`}>{c.used ? "USED" : "NOT USED"}</span>{c.used && !c.buy_grade && <span className="tag warn">review only</span>}<div className="hint">{c.verdict}</div></td>
                         <td className="num">
                           <button className="link" onClick={() => toggle(c)}>{c.included ? "Reject" : "Restore"}</button>{" "}
                           <button className="link" onClick={() => startEdit(c)}>Edit</button>{" "}

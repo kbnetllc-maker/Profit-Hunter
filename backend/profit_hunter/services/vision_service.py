@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import time
 from dataclasses import dataclass
 
@@ -41,12 +42,23 @@ def mode(settings: Settings) -> dict:
     elif live and not key:
         why = f"No API key is set on the server ({openai_provider.API_KEY_ENV})."
     return {"mode": "live" if live else "mock", "provider": settings.vision_provider, "ready": bool(ready),
+            "simulated_billing": (not live) and os.environ.get(SIMULATED_BILLING_ENV) == "1",
             "not_ready_reason": why, "live_enabled": settings.vision_live_enabled, "api_key_present": key}
+
+
+# TEST AID ONLY. With this set to "1" the mock provider behaves as if it
+# billed, so cost limits can be rehearsed end to end with no real spending.
+# Its simulated charges count against the allowance of whichever database is
+# in use, so use it only with a throwaway database.
+SIMULATED_BILLING_ENV = "PROFIT_HUNTER_MOCK_BILLING"
 
 
 def get_provider(settings: Settings) -> VisionProvider:
     if settings.vision_provider == "mock":
-        return MockProvider(review_model=settings.vision_review_model)
+        mock = MockProvider(review_model=settings.vision_review_model)
+        if os.environ.get(SIMULATED_BILLING_ENV) == "1":
+            mock.bills, mock.name = True, "mock-simulated-billing"
+        return mock
     state = mode(settings)
     if not state["ready"]:
         raise VisionUnavailable(state["not_ready_reason"] + " You can still enter the details yourself.")

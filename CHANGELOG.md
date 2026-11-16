@@ -2,6 +2,18 @@
 
 ## Unreleased (v0.1)
 
+### Milestone 4 — AI identification, and a financial audit
+- Identify Item page: upload and crop 1 to 3 photos, add seller text, get suggested details with a basis and source for each, correct them, confirm.
+- Provider-independent vision interface with a mock provider and an OpenAI adapter (Responses API, structured output). Live calls are off by default and have never been made.
+- AI cost ledger in micro-dollars: reservation before each call, reconciliation after, held "billing uncertain" amounts for timeouts, $2 total and $0.02 per-item limits, one bounded retry, no hidden SDK retries, dated prices.
+- Identification cache keyed by workspace, photos, text, model and versions.
+- Second look on request only, with the cost shown first; both answers kept and differences listed.
+- Identity confirmation is bound to the exact details and photos and is withdrawn when they change.
+- Uploads are checked by content, stripped of metadata and stored under random names; photos can be deleted.
+- Audit fixes (see docs/AUDIT.md): BUY-grade comparable tiers (90% match, 60 days), duplicate links counted once, asking-price discount whenever an asking price sets the value, a model's confidence can never unlock BUY, concurrent and repeated win recording made safe, budget change and week-boundary change races closed, out-of-date flags on saved analyses, in-place database upgrades.
+- Evaluation harness and labelling template for real photos; cost projection and commercial-readiness notes (docs/VISION.md).
+- Permanent browser tests (`e2e/`). 393 backend tests.
+
 ### Milestone 3 — Comparables and conservative valuation
 - Comparable Research page: add, edit, reject (with a reason), restore, delete and filter comparables; exact source link shown for each.
 - Comparables store marketplace, title, link, asking or sold price, shipping, condition, size, variation, match, listing type, date observed and the reason for inclusion or exclusion.

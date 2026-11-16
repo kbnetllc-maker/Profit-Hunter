@@ -140,7 +140,7 @@ export default function Dashboard({ simulated, goTo }) {
                   <td className="num"><b>{a.ranking.score}</b></td>
                   <td><button className="link" onClick={() => goTo("research", a.item_id)}>{a.item.description}</button></td>
                   <td>{a.session.seller}</td>
-                  <td><span className={`tag ${a.recommendation.toLowerCase()}`}>{a.recommendation}</span></td>
+                  <td><span className={`tag ${a.recommendation.toLowerCase()}`}>{a.recommendation}</span>{a.stale && <span className="tag warn" title={a.stale_reasons.join(" ")}>out of date</span>}</td>
                   <td>{a.valuation.evidence_quality || "your own estimate"}</td>
                   <td className="num">{usd(a.max_bid.max_bid)}</td>
                   <td className="num">{usd(a.at_max_bid.net_profit)}</td>
@@ -148,7 +148,7 @@ export default function Dashboard({ simulated, goTo }) {
               ))}
             </tbody>
           </table>
-          <p className="hint">Scores weigh profit, ROI, evidence, capital, identification, resale speed, shipping and category concentration. They reflect the budget at the time of each analysis and never authorize a purchase.</p>
+          <p className="hint">Scores weigh profit, ROI, evidence, capital, identification, resale speed, shipping and category concentration. "Out of date" means the budget, settings, comparables or item changed since: recalculate before relying on it. A score never authorizes a purchase.</p>
         </section>
       )}
 
@@ -163,7 +163,7 @@ export default function Dashboard({ simulated, goTo }) {
               {history.map((a) => (
                 <tr key={a.id}>
                   <td>{when(a.created_at)}</td><td>{a.item.description}</td><td>{a.session.seller}</td>
-                  <td><span className={`tag ${a.recommendation.toLowerCase()}`}>{a.recommendation}</span></td>
+                  <td><span className={`tag ${a.recommendation.toLowerCase()}`}>{a.recommendation}</span>{a.stale && a.recommendation !== "SKIP" && <span className="tag warn" title={a.stale_reasons.join(" ")}>out of date</span>}</td>
                   <td className="num">{a.recommendation === "SKIP" ? "—" : usd(a.max_bid && a.max_bid.max_bid)}</td>
                 </tr>
               ))}

@@ -7,8 +7,8 @@ async function request(method, path, body, signal) {
     response = await fetch(path, {
       method,
       signal,
-      headers: body === undefined ? {} : { "Content-Type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: body === undefined || body instanceof FormData ? {} : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : body instanceof FormData ? body : JSON.stringify(body),
     });
   } catch (err) {
     if (err.name === "AbortError") throw err;
@@ -35,9 +35,14 @@ export const api = {
   post: (path, body = {}, signal) => request("POST", path, body, signal),
   put: (path, body) => request("PUT", path, body),
   delete: (path) => request("DELETE", path),
+  upload: (path, formData) => request("POST", path, formData),
 };
 
 // "" -> null, otherwise the trimmed text. Used for optional money fields.
+// A fresh id for each "record my win", so a double click cannot record it twice.
+export const newRequestId = () => (window.crypto && window.crypto.randomUUID
+  ? window.crypto.randomUUID() : `r-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
 export const orNull = (text) => (text === null || text === undefined || String(text).trim() === "" ? null : String(text).trim());
 
 export const usd = (value) => (value === null || value === undefined ? "—" : `$${value}`);

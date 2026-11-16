@@ -269,6 +269,24 @@ def test_budget_change_applies_to_this_week_only_and_never_rewrites_transactions
     assert (d["starting_budget"], d["pending_commitments"], d["available"]) == ("30.00", "8.72", "21.28")
 
 
+def test_budget_change_creates_the_week_record_so_it_cannot_be_lost(client):
+    """Found by the browser test: a budget change saved before the week's record
+    existed could be overwritten by a page loading with the old setting."""
+    from profit_hunter.api import main
+    from profit_hunter.db.models import BudgetWeek
+    s = client.get("/api/settings").json()
+    client.put("/api/settings", json={**s, "weekly_budget": "5.00"})       # no dashboard has been opened yet
+    db = next(main.app.dependency_overrides[main.get_db]())
+    weeks = db.scalars(select(BudgetWeek)).all()
+    assert sorted((w.is_simulated, w.starting_budget_cents) for w in weeks) == [(False, 500), (True, 500)]
+    # A request still holding the OLD settings finds the record and cannot reset it.
+    budget.get_or_create_week(db, Settings(weekly_budget=Dec("50")), weeks[0].week_start, False)
+    db.commit()
+    sid = new_session(client)["id"]
+    r = client.post(f"/api/sessions/{sid}/purchases", json={"description": "SYNTHETIC tee", "winning_bid": "3"})
+    assert r.status_code == 409 and "remaining weekly budget of $5.00" in r.json()["detail"]
+
+
 def test_week_boundary_cannot_move_while_this_week_has_purchases(client):
     s = client.get("/api/settings").json()
     other_day = (API_TODAY.weekday() + 3) % 7       # a start day that puts today in a different week

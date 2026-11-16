@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { api, CONSTRAINT_LABELS, orNull, pct, RANK_LABELS, usd } from "../api.js";
+import { api, CONSTRAINT_LABELS, newRequestId, orNull, pct, RANK_LABELS, usd } from "../api.js";
+
+// Changing any of these means the item is a different thing: confirm again.
+const IDENTITY_FIELDS = new Set(["category", "brand", "model", "size", "color", "material", "era", "identifiers"]);
 
 const BLANK_ITEM = {
   description: "", category: "", brand: "", model: "", size: "", color: "", material: "",
@@ -72,7 +75,10 @@ export default function Analyze({ simulated, goTo, param }) {
     }
   }
 
-  const setField = (name, value) => setItem((prev) => ({ ...prev, [name]: value }));
+  const setField = (name, value) => setItem((prev) => ({
+    ...prev, [name]: value,
+    ...(IDENTITY_FIELDS.has(name) && prev.manually_confirmed ? { manually_confirmed: false } : {}),
+  }));
 
   async function calculate(event) {
     event.preventDefault();
@@ -161,7 +167,7 @@ export default function Analyze({ simulated, goTo, param }) {
           </div>
 
           <h2>2. Item</h2>
-          <div className="notice">Screenshot upload and AI identification arrive in Milestone 4. For now, describe the item yourself.</div>
+          <div className="notice">Describe the item yourself, or <button type="button" className="link" onClick={() => goTo("identify", itemId || null)}>identify it from photos</button>. AI suggestions never count as confirmation.</div>
           <label>Saved item
             <select value={itemId} onChange={(e) => chooseItem(e.target.value)}>
               <option value="">New item (not saved yet)</option>
@@ -185,6 +191,7 @@ export default function Analyze({ simulated, goTo, param }) {
             <input type="checkbox" checked={item.manually_confirmed} onChange={(e) => setField("manually_confirmed", e.target.checked)} />
             I have personally confirmed these details are correct
           </label>
+          <p className="hint">Changing brand, model, size or another identifying detail clears this tick; tick it again once you have re-checked.</p>
 
           <h2>3. Resale value</h2>
           <label className="check">
@@ -277,6 +284,7 @@ function Result({ r, timing, goTo }) {
         )}
       </div>
       <div className="card">
+        {r.stale && <p className="warn-text">⚠ Out of date: {r.stale_reasons.join(" ")} Recalculate before relying on it.</p>}
         <ul className="reasons">
           {r.reasons.map((text) => <li key={text}>{text}</li>)}
           {r.warnings.map((text) => <li key={text} className="warn-text">⚠ {text}</li>)}
@@ -327,7 +335,8 @@ function Result({ r, timing, goTo }) {
 
       {fromComps && (
         <div className="card">
-          <h2>Price evidence {val.evidence_quality && <span className="tag">{val.evidence_quality}</span>}</h2>
+          <h2>Price evidence {val.evidence_quality && <span className="tag">{val.evidence_quality}</span>}
+            {val.ok && <span className={`tag ${val.supports_buy ? "buy" : "warn"}`}>{val.supports_buy ? "BUY grade" : "REVIEW only"}</span>}</h2>
           {val.ok ? <ul className="checks">{val.steps.map((s) => <li key={s}>{s}</li>)}</ul> : <p className="warn-text">{val.reason}</p>}
           {val.ok && <p className="hint">List at {usd(val.competitive_listing_price)}; expect {usd(val.expected_sale_price)}. Expected time to sell: {val.expected_holding_days === null ? "unknown" : `about ${val.expected_holding_days} days`}.</p>}
           {[["Comparables used", val.comparables_used], ["Comparables not used", val.comparables_excluded]].map(([title, list]) => list.length > 0 && (
@@ -401,21 +410,27 @@ function Result({ r, timing, goTo }) {
 
 function RecordWin({ r }) {
   const [bid, setBid] = useState("");
+  const [requestId] = useState(newRequestId);
+  const [sending, setSending] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const overMax = bid !== "" && r.max_bid && Number(bid) > Number(r.max_bid.max_bid);
 
   async function record(event) {
     event.preventDefault();
+    if (sending) return;
     setError("");
+    setSending(true);
     try {
       const p = await api.post(`/api/sessions/${r.session.id}/purchases`, {
         description: r.item.description, winning_bid: bid, category: r.item.category || "uncategorized",
-        expected_net_proceeds: r.sale ? r.sale.net_proceeds : null,
+        expected_net_proceeds: r.sale ? r.sale.net_proceeds : null, request_id: requestId,
       });
       setMessage(`Recorded. All-in cost ${usd(p.total)} is now reserved from your budget.`);
     } catch (e) {
       setError(e.message);
+    } finally {
+      setSending(false);
     }
   }
 
@@ -428,7 +443,7 @@ function RecordWin({ r }) {
         <label>Winning bid ($)
           <input inputMode="decimal" value={bid} onChange={(e) => setBid(e.target.value)} required />
         </label>
-        <div className="actions end"><button type="submit">Record my win</button></div>
+        <div className="actions end"><button type="submit" disabled={sending}>Record my win</button></div>
       </div>
       {overMax && <p className="warn-text">⚠ This is above the maximum bid of {usd(r.max_bid.max_bid)}. It no longer meets your profit rules.</p>}
       {error && <div className="error">{error}</div>}

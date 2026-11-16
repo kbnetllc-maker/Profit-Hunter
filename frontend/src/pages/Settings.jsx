@@ -37,9 +37,22 @@ const GROUPS = [
   ] },
   { title: "Comparable evidence rules", note: "Preliminary assumptions. Stricter values mean more items are skipped.", fields: [
     ["min_credible_comparables", "Fewest credible comparables needed for a valuation", "#"],
-    ["min_comparable_match_confidence", "Lowest match a comparable may have", "%"],
+    ["min_comparable_match_confidence", "Lowest match a comparable may have", "%", "Below this it is not used."],
+    ["buy_comparable_match_confidence", "Match needed for BUY-grade evidence", "%", "Between the two, a comparable supports REVIEW only."],
+    ["preferred_comparable_age_days", "Age limit for BUY-grade evidence", "d", "Older ones can lower the price but do not support BUY."],
     ["max_comparable_age_days", "Oldest a comparable may be", "d", "Days since you saw it."],
     ["max_expected_holding_days", "Longest acceptable time to sell", "d", "Slower items are skipped as holding risk."],
+  ] },
+  { title: "AI identification limits", note: "The app's AI costs. Separate from your inventory budget. The allowance never resets or tops up by itself.", fields: [
+    ["ai_pilot_allowance", "Total AI allowance", "$"],
+    ["ai_max_cost_per_item", "Most AI cost per item", "$", "Second look and retries included."],
+    ["vision_primary_max_output_tokens", "Output limit, first look", "tok", "Includes reasoning tokens; billed as output."],
+    ["vision_review_max_output_tokens", "Output limit, second look", "tok"],
+    ["vision_max_retries", "Retries after a temporary failure", "#", "0 or 1."],
+    ["vision_timeout_seconds", "Give up waiting after", "s"],
+    ["vision_image_max_side", "Longest photo side sent", "px", "Larger costs more; smaller may blur label text."],
+    ["vision_image_token_multiplier", "Image token multiplier", "×", "Vendor figure; unverified for these models."],
+    ["vision_reservation_safety_factor", "Safety margin on cost estimates", "×"],
   ] },
   { title: "Selling costs", fields: [
     ["default_outbound_shipping", "Outbound shipping label you pay", "$", "Used unless the marketplace below sets its own."],
@@ -75,10 +88,18 @@ export default function SettingsPage() {
   const [form, setForm] = useState(null);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState(false);
+  const [vision, setVision] = useState(null);
+  const [usage, setUsage] = useState([]);
+  const loadVision = () => Promise.all([api.get("/api/vision/status"), api.get("/api/vision/usage?limit=15")])
+    .then(([v, u]) => { setVision(v); setUsage(u); }).catch(() => {});
 
   useEffect(() => {
     api.get("/api/settings").then((s) => setForm(toForm(s))).catch((e) => setError(e.message));
+    loadVision();
   }, []);
+  const setPrice = (index, name, value) => set("vision_prices", form.vision_prices.map((p, i) => (i === index ? { ...p, [name]: value } : p)));
+  const resolve = (id, billed) => api.post(`/api/vision/usage/${id}/resolve`, { billed }).then(loadVision).catch((e) => setError(e.message));
+  const money4 = (v) => (v === null || v === undefined ? "—" : `$${Number(v).toFixed(4)}`);
 
   const set = (name, value) => {
     setSaved(false);
@@ -97,6 +118,7 @@ export default function SettingsPage() {
       const s = await api.put("/api/settings", fromForm(form));
       setForm(toForm(s));
       setSaved(true);
+      loadVision();
     } catch (e) {
       setError(e.message);
     }
@@ -198,8 +220,80 @@ export default function SettingsPage() {
       </section>
 
       <section className="card">
-        <h2>AI model</h2>
-        <p className="muted">Screenshot identification arrives in Milestone 4. No AI service is connected and nothing is being charged.</p>
+        <h2>AI identification</h2>
+        {vision && (
+          <p className="hint">
+            Now: <b>{vision.mode === "mock" ? "mock mode (no real identification, no cost)" : vision.ready ? "LIVE — photos are sent to OpenAI" : `live selected but not ready: ${vision.not_ready_reason}`}</b>.
+            {" "}API key on the server: {vision.api_key_present ? "found" : "not set"}. Used {money4(vision.used)} of {money4(vision.allowance)}.
+          </p>
+        )}
+        <div className="settings-grid">
+          <label>Provider
+            <select value={form.vision_provider} onChange={(e) => set("vision_provider", e.target.value)}>
+              <option value="mock">Mock (practice, nothing is sent)</option>
+              <option value="openai">OpenAI (real, paid)</option>
+            </select>
+          </label>
+          <label>First-look model<input value={form.vision_primary_model} onChange={(e) => set("vision_primary_model", e.target.value)} required /></label>
+          <label>Second-look model<input value={form.vision_review_model} onChange={(e) => set("vision_review_model", e.target.value)} required /></label>
+          {[["vision_primary_reasoning", "Reasoning effort, first look"], ["vision_review_reasoning", "Reasoning effort, second look"]].map(([name, label]) => (
+            <label key={name}>{label}
+              <select value={form[name]} onChange={(e) => set(name, e.target.value)}>
+                {form.vision_supported_reasoning.map((r) => <option key={r}>{r}</option>)}
+              </select>
+            </label>
+          ))}
+        </div>
+        <label className="check">
+          <input type="checkbox" checked={form.vision_live_enabled}
+            onChange={(e) => (!e.target.checked || window.confirm("Allow real, paid requests to OpenAI? Photos you analyze will be sent to OpenAI and charged to the API account whose key is set on the server.")) && set("vision_live_enabled", e.target.checked)} />
+          Allow live, paid AI requests (also needs the OpenAI provider above and an API key set on the server)
+        </label>
+        <p className="hint">The API key is never entered here or stored in the database. It is read from the OPENAI_API_KEY environment variable on the computer running the backend.</p>
+
+        <h3>Published prices used for cost limits</h3>
+        <div className="scroll-x">
+          <table className="fees">
+            <thead><tr><th>Model</th><th>Input $ / 1M tokens</th><th>Output $ / 1M tokens</th><th>In effect from</th><th>Last checked</th><th></th></tr></thead>
+            <tbody>
+              {form.vision_prices.map((p, i) => (
+                <tr key={i}>
+                  <td><input value={p.model} onChange={(e) => setPrice(i, "model", e.target.value)} required /></td>
+                  <td><input className="tiny" inputMode="decimal" value={p.input_per_million} onChange={(e) => setPrice(i, "input_per_million", e.target.value)} required /></td>
+                  <td><input className="tiny" inputMode="decimal" value={p.output_per_million} onChange={(e) => setPrice(i, "output_per_million", e.target.value)} required /></td>
+                  <td><input type="date" value={p.effective_from} onChange={(e) => setPrice(i, "effective_from", e.target.value)} required /></td>
+                  <td><input type="date" value={p.verified_on || ""} onChange={(e) => setPrice(i, "verified_on", e.target.value || null)} /></td>
+                  <td><button type="button" className="link" onClick={() => set("vision_prices", form.vision_prices.filter((_, j) => j !== i))}>Remove</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <button type="button" onClick={() => set("vision_prices", [...form.vision_prices, { model: "", input_per_million: "", output_per_million: "", effective_from: new Date().toISOString().slice(0, 10), verified_on: null, source: "" }])}>Add a price</button>
+        <p className="hint">A model with no price cannot be used live, because its cost could not be limited. When a price changes, add a new row with its start date instead of editing the old one.</p>
+
+        <h3>Recent AI requests</h3>
+        {usage.length === 0 ? <p className="muted">None yet.</p> : (
+          <div className="scroll-x">
+            <table>
+              <thead><tr><th>When</th><th>Item</th><th>Model</th><th>Result</th><th className="num">Tokens in / out</th><th className="num">Set aside</th><th className="num">Actual</th><th className="num">Counted</th><th></th></tr></thead>
+              <tbody>
+                {usage.map((u) => (
+                  <tr key={u.id}>
+                    <td>{new Date(u.created_at).toLocaleString()}</td><td>#{u.item_id}</td>
+                    <td>{u.model}{!u.is_live && <span className="tag warn">mock</span>}{u.is_second_look && <span className="tag">2nd look</span>}{u.is_retry && <span className="tag">retry</span>}{u.cache_hit && <span className="tag">reused</span>}</td>
+                    <td>{u.outcome || u.state}{u.state === "UNRESOLVED" && <span className="tag skip">billing uncertain</span>}</td>
+                    <td className="num">{u.input_tokens ?? "—"} / {u.output_tokens ?? "—"}</td>
+                    <td className="num">{money4(u.reserved_cost)}</td><td className="num">{money4(u.actual_cost)}</td><td className="num">{money4(u.charged_cost)}</td>
+                    <td className="num">{u.state === "UNRESOLVED" && (<>
+                      <button type="button" className="link" onClick={() => window.confirm("Mark as billed? Check your OpenAI usage page first.") && resolve(u.id, true)}>It was billed</button>{" "}
+                      <button type="button" className="link" onClick={() => window.confirm("Mark as NOT billed? Check your OpenAI usage page first.") && resolve(u.id, false)}>Not billed</button></>)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </section>
 
       <section className="card">

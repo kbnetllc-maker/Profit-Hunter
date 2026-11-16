@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import Dashboard from "./pages/Dashboard.jsx";
 import Analyze from "./pages/Analyze.jsx";
+import Identify from "./pages/Identify.jsx";
 import Research from "./pages/Research.jsx";
 import Sessions from "./pages/Sessions.jsx";
 import SettingsPage from "./pages/Settings.jsx";
@@ -8,6 +9,7 @@ import SettingsPage from "./pages/Settings.jsx";
 const PAGES = [
   { id: "dashboard", label: "Dashboard", component: Dashboard },
   { id: "analyze", label: "Analyze Item", component: Analyze },
+  { id: "identify", label: "Identify Item", component: Identify },
   { id: "research", label: "Comparable Research", component: Research },
   { id: "sessions", label: "Seller Sessions", component: Sessions },
   { id: "settings", label: "Settings", component: SettingsPage },

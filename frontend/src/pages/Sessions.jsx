@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, orNull, usd } from "../api.js";
+import { api, newRequestId, orNull, usd } from "../api.js";
 
 const BLANK = { seller_username: "", show_url: "", first_item_shipping: "", additional_item_shipping: "", shipping_cap: "", weekly_bundling: false };
 
@@ -84,6 +84,7 @@ function SessionCard({ s, reload }) {
     shipping_cap: s.shipping_cap ?? "",
   });
   const [buy, setBuy] = useState({ description: "", winning_bid: "", category: "" });
+  const [requestId, setRequestId] = useState(newRequestId);
   const [error, setError] = useState("");
   const isActive = s.status === "ACTIVE";
 
@@ -109,8 +110,10 @@ function SessionCard({ s, reload }) {
     run(async () => {
       await api.post(`/api/sessions/${s.id}/purchases`, {
         description: buy.description, winning_bid: buy.winning_bid, category: buy.category || "uncategorized",
+        request_id: requestId,
       });
       setBuy({ description: "", winning_bid: "", category: "" });
+      setRequestId(newRequestId());
     });
   };
 

@@ -87,4 +87,9 @@ Be critical of questionable assumptions. Do not claim features have been impleme
 - Run tests: `cd backend && .venv/bin/python -m pytest` (see README for setup).
 - Money: `Decimal` dollars in code (`profit_hunter/money.py`), integer cents in SQLite. Never use floats for money.
 - `profit_hunter/engine/` is pure calculation with no database access; `profit_hunter/services/` wraps it with persistence.
+- Browser tests: `cd frontend && npm run build`, then `node e2e/run.cjs` from the repo root (own backend, throwaway database, mock AI).
+- AI costs are integer micro-dollars in `ai_usage`; never mix them with the inventory budget. `profit_hunter/vision/` must not import the financial engine, and the engine must not import it.
+- Live AI calls stay off unless the owner enables them. Never set `vision_live_enabled` or add an API key on their behalf.
+- Database changes must be additive (new tables, optional columns, indexes); `init_db` applies them in place.
+- Session handoff notes: `docs/HANDOFF.md`. Audit: `docs/AUDIT.md`. Vision design and costs: `docs/VISION.md`.
 - Build proceeds in the milestones listed in `docs/ROADMAP.md`; finish and verify one before starting the next.
