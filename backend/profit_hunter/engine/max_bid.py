@@ -18,7 +18,7 @@ handled correctly. The answer is then re-checked against every constraint.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from decimal import ROUND_CEILING, Decimal
 
 from .profit import ProfitResult, PurchaseTerms, SaleProceeds, evaluate
 
@@ -41,6 +41,8 @@ class BidConstraints:
     seller_exposure_remaining: Decimal | None = None
     bid_increment: Decimal = Decimal("1.00")
     min_bid: Decimal = Decimal("1.00")
+    # Larger steps at higher prices: (from_bid, increment) pairs.
+    increment_tiers: tuple[tuple[Decimal, Decimal], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,28 @@ class MaxBidResult:
     binding_constraints: list[str]  # which constraints set the ceiling
     reason: str
     profit_at_min_bid: ProfitResult | None = field(default=None)
+
+
+def increment_at(bid: Decimal, base: Decimal,
+                 tiers: tuple[tuple[Decimal, Decimal], ...] = ()) -> Decimal:
+    """The bid step that applies once the bid has reached ``bid``."""
+    inc = base
+    for start, step in sorted(tiers):
+        if bid >= start:
+            inc = step
+    return inc
+
+
+def bid_ladder(c: BidConstraints, upper: Decimal) -> list[Decimal]:
+    """Every bid that can actually be placed, from the minimum bid up to ``upper``."""
+    if c.bid_increment <= 0 or c.min_bid <= 0 or any(step <= 0 for _, step in c.increment_tiers):
+        raise ValueError("Bid increments and the minimum bid must be greater than zero.")
+    bid = (c.min_bid / c.bid_increment).to_integral_value(rounding=ROUND_CEILING) * c.bid_increment
+    ladder = []
+    while bid <= upper:
+        ladder.append(bid)
+        bid += increment_at(bid, c.bid_increment, c.increment_tiers)
+    return ladder
 
 
 def check_constraints(bid: Decimal, sale: SaleProceeds, terms: PurchaseTerms,
@@ -91,26 +115,21 @@ def check_constraints(bid: Decimal, sale: SaleProceeds, terms: PurchaseTerms,
 
 
 def max_profitable_bid(sale: SaleProceeds, terms: PurchaseTerms, c: BidConstraints) -> MaxBidResult:
-    inc = c.bid_increment
-    if inc <= 0 or c.min_bid <= 0:
-        raise ValueError("Bid increment and minimum bid must be greater than zero.")
-
-    lo = int((c.min_bid / inc).to_integral_value(rounding=ROUND_CEILING))
     upper = max(c.max_bid, c.max_all_in_cost, sale.net_proceeds, c.min_bid)
-    hi = int((upper / inc).to_integral_value(rounding=ROUND_FLOOR))
+    ladder = bid_ladder(c, upper)
 
     def largest(passes) -> Decimal | None:
-        """Largest bid in [lo, hi] increments that passes (costs rise with the bid)."""
-        if hi < lo or not passes(lo * inc):
+        """Largest placeable bid that passes (costs only rise with the bid)."""
+        if not ladder or not passes(ladder[0]):
             return None
-        a, b = lo, hi
+        a, b = 0, len(ladder) - 1
         while a < b:
             mid = (a + b + 1) // 2
-            if passes(mid * inc):
+            if passes(ladder[mid]):
                 a = mid
             else:
                 b = mid - 1
-        return a * inc
+        return ladder[a]
 
     def passes_all(bid: Decimal) -> bool:
         return all(ch.passed for ch in check_constraints(bid, sale, terms, c))
@@ -122,7 +141,7 @@ def max_profitable_bid(sale: SaleProceeds, terms: PurchaseTerms, c: BidConstrain
     names = [MIN_PROFIT, MIN_ROI, MAX_BID, MAX_ALL_IN, WEEKLY_BUDGET, SELLER_EXPOSURE]
     ceilings = {n: largest(passes_one(n)) for n in names}
     best = largest(passes_all)
-    min_bid = lo * inc
+    min_bid = ladder[0] if ladder else c.min_bid
     at_min = evaluate(min_bid, sale, terms)
 
     if best is None:

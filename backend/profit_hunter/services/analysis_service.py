@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from ..config import Settings
 from ..db.models import SellerSession
 from ..engine.decision import Decision, DecisionInputs, decide
-from ..engine.max_bid import BidConstraints, MaxBidResult, max_profitable_bid
+from ..engine.max_bid import BidConstraints, MaxBidResult, increment_at, max_profitable_bid
 from ..engine.profit import PurchaseTerms, SaleProceeds, sale_proceeds
 from ..engine.shipping import ShippingEstimate
 from . import budget_service, sessions_service
@@ -54,7 +54,7 @@ def quote_bid(
     if expected_sale_price is not None:
         sale = sale_proceeds(
             expected_sale_price, settings.fee_profile(marketplace),
-            outbound_shipping=settings.default_outbound_shipping,
+            outbound_shipping=settings.outbound_shipping_for(marketplace),
             packaging=settings.default_packaging_cost,
             risk_reserve_rate=settings.risk_reserve_rate)
         terms = PurchaseTerms(inbound_shipping=shipping.amount, tax_rate=settings.purchase_tax_rate,
@@ -63,14 +63,17 @@ def quote_bid(
             min_net_profit=settings.min_net_profit, min_roi=settings.min_roi,
             max_bid=settings.max_bid, max_all_in_cost=settings.max_all_in_cost,
             remaining_budget=budget_left, seller_exposure_remaining=seller_left,
-            bid_increment=settings.bid_increment, min_bid=settings.min_bid))
+            bid_increment=settings.bid_increment, min_bid=settings.min_bid,
+            increment_tiers=settings.increment_tiers()))
 
     decision = decide(DecisionInputs(
         id_confidence=id_confidence, min_id_confidence=settings.min_id_confidence,
         manually_confirmed=manually_confirmed, max_bid=result,
         valuation_is_lower_bound=valuation_is_lower_bound,
         shipping_is_estimate=shipping.is_estimate, current_bid=current_bid,
-        bid_increment=settings.bid_increment, authenticity_uncertain=authenticity_uncertain,
+        bid_increment=increment_at(current_bid or Decimal(0), settings.bid_increment,
+                                   settings.increment_tiers()),
+        authenticity_uncertain=authenticity_uncertain,
         suspected_counterfeit=suspected_counterfeit, condition_unverifiable=condition_unverifiable,
         preferred_roi=settings.preferred_roi))
     return BidQuote(sale, shipping, budget_left, seller_left, result, decision)

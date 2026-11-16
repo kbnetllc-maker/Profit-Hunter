@@ -57,6 +57,22 @@ def test_invalid_settings_are_rejected(db):
         settings_service.update_settings(db, not_a_setting=1)
 
 
+def test_owner_defaults_central_time_nine_percent_tax_vinted(db):
+    s = settings_service.load_settings(db)
+    assert (s.timezone, s.purchase_tax_rate, s.default_sale_marketplace) == ("America/Chicago", Dec("0.09"), "vinted")
+    # Vinted (unverified assumption): no seller fees, buyer pays shipping.
+    q = analysis_service.quote_bid(db, s, make_session(db), expected_sale_price=Dec("20"),
+                                   id_confidence=None, manually_confirmed=True, now=NOW)
+    assert q.sale.net_proceeds == Dec("18.50")  # 20 - 0.50 packaging - 1.00 risk reserve
+    assert q.max_bid.max_bid == Dec("3.00")  # (3 + 5 shipping) x 1.09 = 8.72 all-in, 112% ROI
+    assert q.max_bid.profit_at_max.acquisition.total == Dec("8.72")
+
+
+def test_bid_increment_tiers_are_saved(db):
+    settings_service.update_settings(db, bid_increment_tiers=[{"from_bid": "20", "increment": "2"}])
+    assert settings_service.load_settings(db).increment_tiers() == ((Dec("20"), Dec("2")),)
+
+
 # ---------------------------------------------------------------- sessions + budget
 def test_multiple_purchases_from_the_same_seller(db, settings):
     s = make_session(db)

@@ -28,7 +28,9 @@ def db():
 
 @pytest.fixture
 def settings():
-    return Settings()
+    """Fixed SYNTHETIC assumptions so test numbers do not move when defaults change."""
+    return Settings(purchase_tax_rate=Decimal("0.07"), default_sale_marketplace="ebay",
+                    timezone="America/New_York")
 
 
 # Synthetic marketplace: 13.6% + $0.40, like the default (unverified) eBay profile.

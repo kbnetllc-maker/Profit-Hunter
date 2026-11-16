@@ -34,6 +34,9 @@ class FeeProfile(BaseModel):
     processing_rate: Decimal = Decimal("0")
     processing_fixed: Decimal = Decimal("0")
     fees_apply_to_buyer_shipping: bool = False
+    # Outbound label cost the SELLER pays on this marketplace. None = use the
+    # general default. 0 = the buyer pays for shipping on top of the item price.
+    seller_paid_outbound_shipping: Decimal | None = None
     verified: bool = False
     notes: str = ""
 
@@ -62,8 +65,21 @@ def default_fee_profiles() -> dict[str, FeeProfile]:
             processing_fixed=Decimal("0.45"),
             notes=note,
         ),
-        "vinted": FeeProfile(name="Vinted", notes=note),
+        "vinted": FeeProfile(
+            name="Vinted",
+            seller_paid_outbound_shipping=Decimal("0"),
+            notes=note + " Assumes no seller fees and that the buyer pays shipping, so the "
+                         "expected sale price is the ITEM price only.",
+        ),
     }
+
+
+class BidIncrementTier(BaseModel):
+    """From ``from_bid`` upward, bids go up in steps of ``increment``."""
+
+    model_config = ConfigDict(frozen=True)
+    from_bid: Decimal = Field(ge=0)
+    increment: Decimal = Field(gt=0)
 
 
 class Settings(BaseModel):
@@ -86,14 +102,18 @@ class Settings(BaseModel):
 
     # --- Budget week ------------------------------------------------------
     week_start_day: int = Field(default=0, ge=0, le=6)  # 0 = Monday ... 6 = Sunday
-    timezone: str = "America/New_York"
+    timezone: str = "America/Chicago"
 
     # --- Bidding ----------------------------------------------------------
     bid_increment: Decimal = Decimal("1.00")
     min_bid: Decimal = Decimal("1.00")
+    # Larger bid steps at higher prices, e.g. from $20 up, steps of $2.
+    # Empty = ``bid_increment`` applies at every price. The real Whatnot
+    # thresholds are not confirmed; fill these in once known.
+    bid_increment_tiers: list[BidIncrementTier] = Field(default_factory=list)
 
     # --- Buying costs -----------------------------------------------------
-    purchase_tax_rate: Decimal = Decimal("0.07")
+    purchase_tax_rate: Decimal = Decimal("0.09")
     tax_applies_to_shipping: bool = True
     # Used only when the seller's real shipping terms are unknown.
     unknown_first_item_shipping_estimate: Decimal = Decimal("9.00")
@@ -107,7 +127,7 @@ class Settings(BaseModel):
     # --- Selling costs ----------------------------------------------------
     # The expected sale price is the TOTAL the buyer pays (item + shipping),
     # so the outbound shipping label is a cost we pay out of it.
-    default_sale_marketplace: str = "ebay"
+    default_sale_marketplace: str = "vinted"
     default_outbound_shipping: Decimal = Decimal("5.50")
     default_packaging_cost: Decimal = Decimal("0.50")
     fee_profiles: dict[str, FeeProfile] = Field(default_factory=default_fee_profiles)
@@ -161,6 +181,13 @@ class Settings(BaseModel):
         if not (0 <= v <= 1):
             raise ValueError("must be between 0 and 1 (0.90 = 90%)")
         return v
+
+    def outbound_shipping_for(self, marketplace: str | None = None) -> Decimal:
+        own = self.fee_profile(marketplace).seller_paid_outbound_shipping
+        return self.default_outbound_shipping if own is None else own
+
+    def increment_tiers(self) -> tuple[tuple[Decimal, Decimal], ...]:
+        return tuple((t.from_bid, t.increment) for t in self.bid_increment_tiers)
 
     def fee_profile(self, marketplace: str | None = None) -> FeeProfile:
         key = (marketplace or self.default_sale_marketplace).lower()

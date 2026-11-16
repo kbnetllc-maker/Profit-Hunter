@@ -149,6 +149,18 @@ def test_max_bid_result_satisfies_every_constraint_and_next_increment_fails():
     assert not all(ch.passed for ch in check_constraints(r.max_bid + c.bid_increment, sale, t, c))
 
 
+def test_larger_bid_steps_above_a_threshold():
+    """Synthetic tiers: $1 steps, then $2 steps from $6. Valid bids: 1..6, 8, 10."""
+    tiers = ((Dec("6"), Dec("2")),)
+    c = constraints(increment_tiers=tiers)
+    assert mb.bid_ladder(c, Dec("10")) == [Dec(n) for n in (1, 2, 3, 4, 5, 6, 8, 10)]
+    # Budget allows a $7.48 bid; the highest PLACEABLE bid under it is $6, not $7.
+    r = max_profitable_bid(synth_sale("40.00"), terms(), constraints(increment_tiers=tiers, remaining_budget="8.00"))
+    assert r.max_bid == Dec("6.00")
+    assert mb.increment_at(Dec("5"), Dec("1"), tiers) == Dec("1")
+    assert mb.increment_at(Dec("6"), Dec("1"), tiers) == Dec("2")
+
+
 def test_financial_calculation_is_fast():
     """Engineering target: well under 100 ms, even searching cent by cent."""
     sale, t = synth_sale("40.00"), terms(shipping="3.00")
