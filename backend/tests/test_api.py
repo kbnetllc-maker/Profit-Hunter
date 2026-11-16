@@ -1,26 +1,5 @@
 """API tests. All sellers, items and prices are SYNTHETIC."""
 
-import pytest
-from fastapi.testclient import TestClient
-
-from profit_hunter.api import main
-from profit_hunter.db import init_db, make_engine, make_session_factory
-
-
-@pytest.fixture
-def client():
-    engine = make_engine("sqlite://")
-    init_db(engine)
-    factory = make_session_factory(engine)
-
-    def override():
-        with factory() as db:
-            yield db
-
-    main.app.dependency_overrides[main.get_db] = override
-    yield TestClient(main.app)
-    main.app.dependency_overrides.clear()
-
 
 def new_session(client, **kw):
     body = {"seller_username": "synthetic_seller", "first_item_shipping": "5.00",

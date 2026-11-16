@@ -4,8 +4,7 @@ Money columns end in ``_cents`` and hold whole cents as integers.
 Every row that involves money carries ``is_simulated`` so practice runs
 never mix with real purchases.
 
-Tables for items, identifications, comparables, valuations, bid
-recommendations, inventory and resales are added in later milestones.
+Tables for identifications, inventory and resales are added in later milestones.
 """
 
 from __future__ import annotations
@@ -173,3 +172,43 @@ class Analysis(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime)
 
     item: Mapped[Item] = relationship()
+
+
+class ComparableListing(Base):
+    """One comparable listing found by a person, attached to an item."""
+
+    __tablename__ = "comparable_listings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    marketplace: Mapped[str] = mapped_column(String(60))
+    title: Mapped[str] = mapped_column(String(300))
+    source_url: Mapped[str] = mapped_column(String(1000))
+    # ACTIVE = asking price, SOLD = completed sale, AUCTION = never used as evidence.
+    listing_status: Mapped[str] = mapped_column(String(8))
+    price_cents: Mapped[int] = mapped_column(Integer)  # asking or sold price, excluding shipping
+    shipping_price_cents: Mapped[int | None] = mapped_column(Integer)  # NULL = unknown
+    condition: Mapped[str] = mapped_column(String(120), default="")
+    size: Mapped[str] = mapped_column(String(60), default="")
+    variation: Mapped[str] = mapped_column(String(200), default="")
+    variation_status: Mapped[str] = mapped_column(String(10), default="SAME")  # SAME | PLAUSIBLE | DIFFERENT
+    match_confidence_pct: Mapped[int] = mapped_column(Integer)  # 0..100
+    days_to_sell: Mapped[int | None] = mapped_column(Integer)
+    date_observed: Mapped[date] = mapped_column(Date)
+    included: Mapped[bool] = mapped_column(Boolean, default=True)  # False = rejected by the user
+    decision_reason: Mapped[str] = mapped_column(String(500), default="")  # why included or rejected
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+    item: Mapped[Item] = relationship()
+
+
+class Valuation(Base):
+    """Snapshot of a valuation used by an analysis: the comparables exactly as
+    they were, the rules in force and the result. Never edited."""
+
+    __tablename__ = "valuations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    expected_sale_price_cents: Mapped[int | None] = mapped_column(Integer)  # NULL = could not be valued
+    inputs: Mapped[dict] = mapped_column(JSON)
+    result: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime)

@@ -34,6 +34,7 @@ export const api = {
   get: (path, signal) => request("GET", path, undefined, signal),
   post: (path, body = {}, signal) => request("POST", path, body, signal),
   put: (path, body) => request("PUT", path, body),
+  delete: (path) => request("DELETE", path),
 };
 
 // "" -> null, otherwise the trimmed text. Used for optional money fields.
@@ -53,4 +54,15 @@ export const CONSTRAINT_LABELS = {
   max_all_in_cost: "Maximum all-in cost",
   weekly_budget: "Remaining weekly budget",
   seller_exposure: "Seller exposure limit",
+};
+
+export const RANK_LABELS = {
+  net_profit: "Expected net profit",
+  roi: "Expected ROI",
+  evidence_quality: "Quality of price evidence",
+  capital_required: "Low capital required",
+  id_confidence: "Identification confidence",
+  resale_speed: "Speed of resale",
+  incremental_shipping: "Low added shipping",
+  inventory_concentration: "Category not over-bought",
 };

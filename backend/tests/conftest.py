@@ -55,3 +55,23 @@ def constraints(**overrides):
                 seller_exposure_remaining=Decimal("25"))
     base.update({k: (Decimal(v) if isinstance(v, str) else v) for k, v in overrides.items()})
     return BidConstraints(**base)
+
+
+@pytest.fixture
+def client():
+    """The web API on a fresh in-memory database."""
+    from fastapi.testclient import TestClient
+
+    from profit_hunter.api import main
+
+    engine = make_engine("sqlite://")
+    init_db(engine)
+    factory = make_session_factory(engine)
+
+    def override():
+        with factory() as session:
+            yield session
+
+    main.app.dependency_overrides[main.get_db] = override
+    yield TestClient(main.app)
+    main.app.dependency_overrides.clear()

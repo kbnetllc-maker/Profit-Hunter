@@ -9,7 +9,7 @@ browser. The browser only displays numbers; every calculation happens here.
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Iterator
@@ -17,18 +17,23 @@ from typing import Iterator
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import select
+from pydantic import BaseModel, Field, ValidationError, field_validator
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import Settings
 from ..db import init_db, make_engine, make_session_factory
-from ..db.models import Analysis, Item, Purchase, SellerSession
+from zoneinfo import ZoneInfo
+
+from ..db.models import Analysis, ComparableListing, Item, Purchase, SellerSession
+from ..db.models import Valuation as ValuationRow
 from ..engine.max_bid import increment_at
 from ..engine.profit import ProfitResult, PurchaseTerms, evaluate
-from ..money import ZERO, from_cents, opt_from_cents
+from ..engine.ranking import WEIGHTS, RankInputs, rank
+from ..engine.valuation import LISTING_STATUSES, VARIATION_STATUSES, Valuation
+from ..money import ZERO, from_cents, opt_from_cents, opt_to_cents, to_cents
 from ..services import (analysis_service, budget_service, sessions_service, settings_service,
-                        to_db_time, utcnow)
+                        to_db_time, utcnow, valuation_service)
 
 app = FastAPI(title="Profit Hunter", version="0.1.0")
 _factory = None
@@ -314,11 +319,203 @@ class ItemDetails(BaseModel):
     manually_confirmed: bool = False
 
 
+ITEM_FIELDS = tuple(ItemDetails.model_fields)
+
+
+def get_item_or_404(db: Session, item_id: int) -> Item:
+    item = db.get(Item, item_id)
+    if item is None:
+        raise HTTPException(404, "Item not found.")
+    return item
+
+
+def get_comparable_or_404(db: Session, comparable_id: int) -> ComparableListing:
+    c = db.get(ComparableListing, comparable_id)
+    if c is None:
+        raise HTTPException(404, "Comparable not found.")
+    return c
+
+
+# --------------------------------------------------------------------------
+# Comparable research
+# --------------------------------------------------------------------------
+class ComparableBody(BaseModel):
+    marketplace: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    # Required: every comparable must be traceable to where it was seen.
+    source_url: str = Field(min_length=1)
+    listing_status: str
+    price: Decimal = Field(gt=0)
+    shipping_price: Decimal | None = Field(default=None, ge=0)
+    condition: str = ""
+    size: str = ""
+    variation: str = ""
+    variation_status: str = "SAME"
+    match_confidence_pct: int = Field(ge=0, le=100)
+    days_to_sell: int | None = Field(default=None, ge=0)
+    date_observed: date
+    included: bool = True
+    decision_reason: str = ""
+
+    @field_validator("source_url")
+    @classmethod
+    def _web_link(cls, v: str) -> str:
+        v = v.strip()
+        if not v.lower().startswith(("http://", "https://")):
+            raise ValueError("must be a full web link starting with http:// or https://")
+        return v
+
+    @field_validator("listing_status")
+    @classmethod
+    def _status(cls, v: str) -> str:
+        if v not in LISTING_STATUSES:
+            raise ValueError(f"must be one of {', '.join(LISTING_STATUSES)}")
+        return v
+
+    @field_validator("variation_status")
+    @classmethod
+    def _variation(cls, v: str) -> str:
+        if v not in VARIATION_STATUSES:
+            raise ValueError(f"must be one of {', '.join(VARIATION_STATUSES)}")
+        return v
+
+
+def comparable_json(c: ComparableListing) -> dict:
+    return {
+        "id": c.id, "item_id": c.item_id, "marketplace": c.marketplace, "title": c.title,
+        "source_url": c.source_url, "listing_status": c.listing_status,
+        "price": money(from_cents(c.price_cents)),
+        "shipping_price": money(opt_from_cents(c.shipping_price_cents)),
+        "condition": c.condition, "size": c.size, "variation": c.variation,
+        "variation_status": c.variation_status, "match_confidence_pct": c.match_confidence_pct,
+        "days_to_sell": c.days_to_sell, "date_observed": c.date_observed.isoformat(),
+        "included": c.included, "decision_reason": c.decision_reason,
+    }
+
+
+def valuation_json(v: Valuation, comps: list[ComparableListing]) -> dict:
+    rows = {c.id: c for c in comps}
+
+    def entry(verdict) -> dict:
+        return {**comparable_json(rows[verdict.comparable.id]), "used": verdict.used,
+                "verdict": verdict.reason, "price_compared": money(verdict.basis_price)}
+
+    return {
+        "ok": v.ok, "reason": v.reason,
+        "lowest_credible_price": money(v.lowest_credible_price),
+        "lowest_comparable_id": v.lowest_comparable_id,
+        "competitive_listing_price": money(v.competitive_listing_price),
+        "expected_sale_price": money(v.expected_sale_price),
+        "active_only_discount_applied": v.active_only_discount_applied,
+        "evidence_quality": v.evidence_quality,
+        "sold_count": v.sold_count, "active_count": v.active_count,
+        "expected_holding_days": v.expected_holding_days,
+        "steps": list(v.steps), "warnings": list(v.warnings),
+        "comparables_used": [entry(x) for x in v.verdicts if x.used],
+        "comparables_excluded": [entry(x) for x in v.verdicts if not x.used],
+    }
+
+
+def item_json(item: Item) -> dict:
+    return {"id": item.id, "created_at": iso(item.created_at),
+            **{name: getattr(item, name) for name in ITEM_FIELDS}}
+
+
+def _check_comparable(body: ComparableBody, settings: Settings) -> None:
+    if body.date_observed > valuation_service.today_for(settings):
+        raise HTTPException(400, "The date observed cannot be in the future.")
+    if not body.included and not body.decision_reason.strip():
+        raise HTTPException(400, "Give a reason for rejecting this comparable.")
+
+
+def _comparable_columns(body: ComparableBody) -> dict:
+    data = body.model_dump(exclude={"price", "shipping_price"})
+    return {**data, "marketplace": body.marketplace.strip().lower(), "title": body.title.strip(),
+            "price_cents": to_cents(body.price), "shipping_price_cents": opt_to_cents(body.shipping_price),
+            # How long a sale took only means something for a completed sale.
+            "days_to_sell": body.days_to_sell if body.listing_status == "SOLD" else None}
+
+
+@app.get("/api/items")
+def list_items(limit: int = 50, db: Session = Depends(get_db)) -> list[dict]:
+    counts = dict(db.execute(select(ComparableListing.item_id, func.count())
+                             .group_by(ComparableListing.item_id)).all())
+    rows = db.scalars(select(Item).order_by(Item.id.desc()).limit(min(limit, 200))).all()
+    return [{**item_json(i), "comparable_count": counts.get(i.id, 0)} for i in rows]
+
+
+@app.post("/api/items")
+def create_item(body: ItemDetails, db: Session = Depends(get_db)) -> dict:
+    item = Item(**body.model_dump(), created_at=to_db_time(utcnow()))
+    db.add(item)
+    db.commit()
+    return item_json(item)
+
+
+@app.put("/api/items/{item_id}")
+def update_item(item_id: int, body: ItemDetails, db: Session = Depends(get_db)) -> dict:
+    item = get_item_or_404(db, item_id)
+    for name, value in body.model_dump().items():
+        setattr(item, name, value)
+    db.commit()
+    return item_json(item)
+
+
+@app.get("/api/items/{item_id}")
+def read_item(item_id: int, marketplace: str | None = None, db: Session = Depends(get_db)) -> dict:
+    """The item, its comparables and the valuation they currently support."""
+    settings = settings_service.load_settings(db)
+    item = get_item_or_404(db, item_id)
+    market = (marketplace or settings.default_sale_marketplace).lower()
+    if market not in settings.fee_profiles:
+        raise HTTPException(400, f"No fee profile is configured for marketplace '{market}'.")
+    comps = valuation_service.comparables_for(db, item.id)
+    v = valuation_service.value(db, settings, item, marketplace=market)
+    policy = valuation_service.policy_for(settings, market)
+    return {**item_json(item), "marketplace": market,
+            "price_basis": "price plus shipping" if policy.include_buyer_shipping else "item price only",
+            "comparables": [comparable_json(c) for c in comps],
+            "valuation": valuation_json(v, comps)}
+
+
+@app.post("/api/items/{item_id}/comparables")
+def add_comparable(item_id: int, body: ComparableBody, db: Session = Depends(get_db)) -> dict:
+    _check_comparable(body, settings_service.load_settings(db))
+    c = ComparableListing(item_id=get_item_or_404(db, item_id).id, **_comparable_columns(body),
+                          created_at=to_db_time(utcnow()))
+    db.add(c)
+    db.commit()
+    return comparable_json(c)
+
+
+@app.put("/api/comparables/{comparable_id}")
+def update_comparable(comparable_id: int, body: ComparableBody, db: Session = Depends(get_db)) -> dict:
+    _check_comparable(body, settings_service.load_settings(db))
+    c = get_comparable_or_404(db, comparable_id)
+    for name, value in _comparable_columns(body).items():
+        setattr(c, name, value)
+    db.commit()
+    return comparable_json(c)
+
+
+@app.delete("/api/comparables/{comparable_id}")
+def delete_comparable(comparable_id: int, db: Session = Depends(get_db)) -> dict:
+    """Remove a comparable entered by mistake. Past analyses keep their own copy."""
+    db.delete(get_comparable_or_404(db, comparable_id))
+    db.commit()
+    return {"deleted": comparable_id}
+
+
 class AnalyzeRequest(BaseModel):
     session_id: int
     item: ItemDetails
-    # Conservative expected sale price entered by the user. Leave empty when
-    # there is no reliable evidence; the result is then SKIP.
+    # An item already saved in Comparable Research. Empty = save a new item.
+    item_id: int | None = None
+    # True = derive the sale price from the item's comparables (needs item_id).
+    use_comparables: bool = False
+    # Conservative expected sale price entered by the user. Ignored when
+    # use_comparables is true. Leave empty when there is no reliable
+    # evidence; the result is then SKIP.
     expected_sale_price: Decimal | None = Field(default=None, gt=0)
     valuation_note: str = ""
     valuation_is_lower_bound: bool = False
@@ -336,19 +533,39 @@ def analyze(body: AnalyzeRequest, db: Session = Depends(get_db)) -> dict:
     marketplace = (body.marketplace or settings.default_sale_marketplace).lower()
     if marketplace not in settings.fee_profiles:
         raise HTTPException(400, f"No fee profile is configured for marketplace '{marketplace}'.")
+    if body.use_comparables and body.item_id is None:
+        raise HTTPException(400, "Choose a researched item to value it from comparables.")
+
+    if body.item_id is None:
+        item = Item(**body.item.model_dump(), created_at=to_db_time(utcnow()))
+        db.add(item)
+    else:
+        item = get_item_or_404(db, body.item_id)
+        for name, value in body.item.model_dump().items():
+            setattr(item, name, value)
+    db.flush()
+
+    valuation: Valuation | None = None
+    comps: list[ComparableListing] = []
+    price = body.expected_sale_price
+    if body.use_comparables:
+        comps = valuation_service.comparables_for(db, item.id)
+        valuation = valuation_service.value(db, settings, item, marketplace=marketplace)
+        price = valuation.expected_sale_price
 
     q = analysis_service.quote_bid(
-        db, settings, session, expected_sale_price=body.expected_sale_price,
+        db, settings, session, expected_sale_price=price,
         id_confidence=None,  # AI identification arrives in Milestone 4
         manually_confirmed=body.item.manually_confirmed,
         valuation_is_lower_bound=body.valuation_is_lower_bound, current_bid=body.current_bid,
         marketplace=marketplace, authenticity_uncertain=body.authenticity_uncertain,
         suspected_counterfeit=body.suspected_counterfeit,
-        condition_unverifiable=body.condition_unverifiable)
+        condition_unverifiable=body.condition_unverifiable,
+        expected_holding_days=valuation.expected_holding_days if valuation else None)
 
     terms = PurchaseTerms(inbound_shipping=q.shipping.amount, tax_rate=settings.purchase_tax_rate,
                           tax_applies_to_shipping=settings.tax_applies_to_shipping)
-    sale_json = max_json = at_max = at_next = None
+    sale_json = max_json = at_max = at_next = ranking = None
     next_bid = None
     if body.current_bid is not None:
         next_bid = body.current_bid + increment_at(body.current_bid, settings.bid_increment,
@@ -365,6 +582,7 @@ def analyze(body: AnalyzeRequest, db: Session = Depends(get_db)) -> dict:
         }
         if next_bid is not None:
             at_next = profit_json(evaluate(next_bid, s, terms))
+    recommendation = q.decision.recommendation.value
     if q.max_bid:
         m = q.max_bid
         max_json = {
@@ -375,16 +593,44 @@ def analyze(body: AnalyzeRequest, db: Session = Depends(get_db)) -> dict:
         }
         if m.profit_at_max:
             at_max = profit_json(m.profit_at_max)
+            if recommendation != "SKIP":
+                ranking = ranking_json(db, settings, session, body, m.profit_at_max, valuation)
 
-    item = Item(**body.item.model_dump(), created_at=to_db_time(utcnow()))
-    db.add(item)
-    db.flush()
+    reasons, warnings = list(q.decision.reasons), list(q.decision.warnings)
+    if valuation is not None:
+        if not valuation.ok:
+            reasons.append(valuation.reason)
+        elif recommendation != "SKIP":
+            warnings.extend(valuation.warnings)
+
+    if valuation is not None:
+        valuation_block = {"source": "Comparables", "note": body.valuation_note,
+                           "is_lower_bound": body.valuation_is_lower_bound,
+                           **valuation_json(valuation, comps)}
+        snapshot = ValuationRow(
+            item_id=item.id, expected_sale_price_cents=opt_to_cents(valuation.expected_sale_price),
+            inputs={"comparables": [comparable_json(c) for c in comps], "marketplace": marketplace,
+                    "identity_confirmed": body.item.manually_confirmed,
+                    "policy": {k: str(v) for k, v in
+                               vars(valuation_service.policy_for(settings, marketplace)).items()},
+                    "valued_on": valuation_service.today_for(settings).isoformat()},
+            result=valuation_block, created_at=to_db_time(utcnow()))
+        db.add(snapshot)
+        db.flush()
+        valuation_block["valuation_id"] = snapshot.id
+    else:
+        valuation_block = {
+            "source": "Entered manually by the user" if body.expected_sale_price else "None",
+            "note": body.valuation_note, "is_lower_bound": body.valuation_is_lower_bound,
+            "comparables_used": [], "comparables_excluded": [],
+        }
+
     result = {
         "item": body.item.model_dump(),
         "session": {"id": session.id, "seller": session.seller.username},
         "is_simulated": session.is_simulated,
-        "recommendation": q.decision.recommendation.value,
-        "reasons": q.decision.reasons, "warnings": q.decision.warnings,
+        "recommendation": recommendation,
+        "reasons": reasons, "warnings": warnings,
         "authorizes_purchase": False,
         "identification": {
             "confidence": None, "manually_confirmed": body.item.manually_confirmed,
@@ -392,11 +638,7 @@ def analyze(body: AnalyzeRequest, db: Session = Depends(get_db)) -> dict:
             "evidence": ("Details confirmed by the user." if body.item.manually_confirmed
                          else "Not confirmed. No AI identification has been run."),
         },
-        "valuation": {
-            "source": "Entered manually by the user" if body.expected_sale_price else "None",
-            "note": body.valuation_note, "is_lower_bound": body.valuation_is_lower_bound,
-            "comparables_used": [], "comparables_excluded": [],
-        },
+        "valuation": valuation_block,
         "sale": sale_json,
         "shipping": {"amount": money(q.shipping.amount), "is_estimate": q.shipping.is_estimate,
                      "basis": q.shipping.basis},
@@ -406,6 +648,7 @@ def analyze(body: AnalyzeRequest, db: Session = Depends(get_db)) -> dict:
         "current_bid": money(body.current_bid), "next_bid": money(next_bid),
         "max_bid": max_json, "at_max_bid": at_max, "at_next_bid": at_next,
         "preferred_roi": str(settings.preferred_roi),
+        "ranking": ranking,
     }
     record = Analysis(
         item_id=item.id, session_id=session.id, is_simulated=session.is_simulated,
@@ -416,6 +659,49 @@ def analyze(body: AnalyzeRequest, db: Session = Depends(get_db)) -> dict:
     db.add(record)
     db.commit()
     return {"id": record.id, "item_id": item.id, "created_at": iso(record.created_at), **result}
+
+
+def ranking_json(db: Session, settings: Settings, session: SellerSession, body: AnalyzeRequest,
+                 at_max: ProfitResult, valuation: Valuation | None) -> dict:
+    """Score the opportunity at the MAXIMUM bid (its least favourable price)."""
+    by_category = budget_service.budget_report(
+        db, settings, simulated=session.is_simulated).purchases_by_category
+    spent = sum(by_category.values(), ZERO)
+    category = body.item.category.strip() or "uncategorized"
+    score = rank(RankInputs(
+        net_profit=at_max.net_profit, roi=at_max.roi, all_in_cost=at_max.acquisition.total,
+        incremental_shipping=at_max.acquisition.inbound_shipping,
+        min_net_profit=settings.min_net_profit, preferred_roi=settings.preferred_roi,
+        max_all_in_cost=settings.max_all_in_cost,
+        id_confidence=Decimal(1) if body.item.manually_confirmed else Decimal(0),
+        evidence_quality=valuation.evidence_quality if valuation else None,
+        holding_days=valuation.expected_holding_days if valuation else None,
+        max_holding_days=settings.max_expected_holding_days,
+        category_share=by_category.get(category, ZERO) / spent if spent > 0 else ZERO))
+    return {"score": str(score.total),
+            "components": {k: {"points": str(v), "out_of": str(WEIGHTS[k])}
+                           for k, v in score.components.items()}}
+
+
+@app.get("/api/opportunities")
+def opportunities(simulated: bool = False, db: Session = Depends(get_db)) -> list[dict]:
+    """This week's BUY/REVIEW analyses in active sessions, best score first.
+
+    Only the latest analysis of each item counts. A ranking is a comparison
+    aid; it never authorizes a purchase.
+    """
+    settings = settings_service.load_settings(db)
+    week_start = budget_service.current_week_start(settings)
+    since = to_db_time(datetime.combine(week_start, time.min, tzinfo=ZoneInfo(settings.timezone)))
+    rows = db.scalars(select(Analysis).join(SellerSession, Analysis.session_id == SellerSession.id).where(
+        Analysis.is_simulated == simulated, Analysis.created_at >= since,
+        SellerSession.status == "ACTIVE").order_by(Analysis.id.desc())).all()
+    latest: dict[int, Analysis] = {}
+    for a in rows:
+        latest.setdefault(a.item_id, a)
+    ranked = [a for a in latest.values() if a.recommendation != "SKIP" and a.result.get("ranking")]
+    ranked.sort(key=lambda a: Decimal(a.result["ranking"]["score"]), reverse=True)
+    return [{"id": a.id, "item_id": a.item_id, "created_at": iso(a.created_at), **a.result} for a in ranked]
 
 
 @app.get("/api/analyses")

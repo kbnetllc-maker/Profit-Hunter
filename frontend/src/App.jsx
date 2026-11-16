@@ -1,19 +1,27 @@
 import { useEffect, useState } from "react";
 import Dashboard from "./pages/Dashboard.jsx";
 import Analyze from "./pages/Analyze.jsx";
+import Research from "./pages/Research.jsx";
 import Sessions from "./pages/Sessions.jsx";
 import SettingsPage from "./pages/Settings.jsx";
 
 const PAGES = [
   { id: "dashboard", label: "Dashboard", component: Dashboard },
   { id: "analyze", label: "Analyze Item", component: Analyze },
+  { id: "research", label: "Comparable Research", component: Research },
   { id: "sessions", label: "Seller Sessions", component: Sessions },
   { id: "settings", label: "Settings", component: SettingsPage },
 ];
-const COMING = ["Comparable Research", "Inventory"];
+const COMING = ["Inventory"];
 
 export default function App() {
   const [page, setPage] = useState(() => window.location.hash.slice(1) || "dashboard");
+  // Optional value handed from one page to the next (e.g. which item to open).
+  const [param, setParam] = useState(null);
+  const goTo = (id, value = null) => {
+    setParam(value);
+    setPage(id);
+  };
   const [simulated, setSimulated] = useState(() => localStorage.getItem("ph-mode") === "simulated");
 
   useEffect(() => {
@@ -32,7 +40,7 @@ export default function App() {
         <div className="brand">Profit Hunter</div>
         <nav>
           {PAGES.map((p) => (
-            <button key={p.id} className={p.id === current.id ? "nav active" : "nav"} onClick={() => setPage(p.id)}>
+            <button key={p.id} className={p.id === current.id ? "nav active" : "nav"} onClick={() => goTo(p.id)}>
               {p.label}
             </button>
           ))}
@@ -54,7 +62,7 @@ export default function App() {
       </aside>
       <main className="main">
         {simulated && <div className="banner-sim">PRACTICE MODE — simulated purchases, separate budget</div>}
-        <Page key={`${current.id}-${simulated}`} simulated={simulated} goTo={setPage} />
+        <Page key={`${current.id}-${simulated}`} simulated={simulated} goTo={goTo} param={param} />
       </main>
     </div>
   );

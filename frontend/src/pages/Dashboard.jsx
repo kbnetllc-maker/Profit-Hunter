@@ -4,14 +4,16 @@ import { api, usd, when } from "../api.js";
 export default function Dashboard({ simulated, goTo }) {
   const [data, setData] = useState(null);
   const [history, setHistory] = useState([]);
+  const [ranked, setRanked] = useState([]);
   const [error, setError] = useState("");
 
   useEffect(() => {
     const q = `?simulated=${simulated}`;
-    Promise.all([api.get(`/api/dashboard${q}`), api.get(`/api/analyses${q}&limit=8`)])
-      .then(([d, h]) => {
+    Promise.all([api.get(`/api/dashboard${q}`), api.get(`/api/analyses${q}&limit=8`), api.get(`/api/opportunities${q}`)])
+      .then(([d, h, o]) => {
         setData(d);
         setHistory(h);
+        setRanked(o);
       })
       .catch((e) => setError(e.message));
   }, [simulated]);
@@ -126,6 +128,29 @@ export default function Dashboard({ simulated, goTo }) {
           </table>
         )}
       </section>
+
+      {ranked.length > 0 && (
+        <section className="card">
+          <h2>Ranked opportunities <span className="muted">(this week, active sessions)</span></h2>
+          <table>
+            <thead><tr><th className="num">Score</th><th>Item</th><th>Seller</th><th>Result</th><th>Evidence</th><th className="num">Max bid</th><th className="num">Profit at max bid</th></tr></thead>
+            <tbody>
+              {ranked.map((a) => (
+                <tr key={a.id}>
+                  <td className="num"><b>{a.ranking.score}</b></td>
+                  <td><button className="link" onClick={() => goTo("research", a.item_id)}>{a.item.description}</button></td>
+                  <td>{a.session.seller}</td>
+                  <td><span className={`tag ${a.recommendation.toLowerCase()}`}>{a.recommendation}</span></td>
+                  <td>{a.valuation.evidence_quality || "your own estimate"}</td>
+                  <td className="num">{usd(a.max_bid.max_bid)}</td>
+                  <td className="num">{usd(a.at_max_bid.net_profit)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="hint">Scores weigh profit, ROI, evidence, capital, identification, resale speed, shipping and category concentration. They reflect the budget at the time of each analysis and never authorize a purchase.</p>
+        </section>
+      )}
 
       <section className="card">
         <h2>Recent analyses</h2>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, CONSTRAINT_LABELS, orNull, pct, usd } from "../api.js";
+import { api, CONSTRAINT_LABELS, orNull, pct, RANK_LABELS, usd } from "../api.js";
 
 const BLANK_ITEM = {
   description: "", category: "", brand: "", model: "", size: "", color: "", material: "",
@@ -11,12 +11,16 @@ const ATTRIBUTES = [
   ["defects", "Visible defects"], ["identifiers", "Tags / identifiers"],
 ];
 
-export default function Analyze({ simulated, goTo }) {
+export default function Analyze({ simulated, goTo, param }) {
   const [sessions, setSessions] = useState(null);
   const [marketplaces, setMarketplaces] = useState({});
   const [defaultMarket, setDefaultMarket] = useState("");
   const [sessionId, setSessionId] = useState("");
   const [item, setItem] = useState(BLANK_ITEM);
+  const [items, setItems] = useState([]);
+  const [itemId, setItemId] = useState(param ? String(param) : "");
+  const [research, setResearch] = useState(null);
+  const [priceSource, setPriceSource] = useState(param ? "comparables" : "manual");
   const [price, setPrice] = useState("");
   const [valuationNote, setValuationNote] = useState("");
   const [lowerBound, setLowerBound] = useState(false);
@@ -30,8 +34,9 @@ export default function Analyze({ simulated, goTo }) {
   const pending = useRef(null);
 
   useEffect(() => {
-    Promise.all([api.get(`/api/sessions?simulated=${simulated}`), api.get("/api/settings")])
-      .then(([all, settings]) => {
+    Promise.all([api.get(`/api/sessions?simulated=${simulated}`), api.get("/api/settings"), api.get("/api/items")])
+      .then(([all, settings, saved]) => {
+        setItems(saved);
         const active = all.filter((s) => s.status === "ACTIVE");
         setSessions(active);
         if (active.length) setSessionId(String(active[0].id));
@@ -41,6 +46,31 @@ export default function Analyze({ simulated, goTo }) {
       })
       .catch((e) => setError(e.message));
   }, [simulated]);
+
+  // Load the saved item and the valuation its comparables support.
+  useEffect(() => {
+    if (!itemId) {
+      setResearch(null);
+      return;
+    }
+    api.get(`/api/items/${itemId}${marketplace ? `?marketplace=${marketplace}` : ""}`)
+      .then((data) => {
+        setResearch(data);
+        setItem((prev) => (prev.loadedFrom === data.id ? prev : { ...Object.fromEntries(Object.keys(BLANK_ITEM).map((k) => [k, data[k]])), loadedFrom: data.id }));
+      })
+      .catch((e) => setError(e.message));
+  }, [itemId, marketplace]);
+
+  function chooseItem(id) {
+    setItemId(id);
+    setResult(null);
+    if (!id) {
+      setItem(BLANK_ITEM);
+      setPriceSource("manual");
+    } else {
+      setPriceSource("comparables");
+    }
+  }
 
   const setField = (name, value) => setItem((prev) => ({ ...prev, [name]: value }));
 
@@ -54,12 +84,20 @@ export default function Analyze({ simulated, goTo }) {
     const started = performance.now();
     try {
       const data = await api.post("/api/analyze", {
-        session_id: Number(sessionId), item, expected_sale_price: orNull(price),
+        session_id: Number(sessionId), item: Object.fromEntries(Object.keys(BLANK_ITEM).map((k) => [k, item[k]])),
+        item_id: itemId ? Number(itemId) : null, use_comparables: priceSource === "comparables",
+        expected_sale_price: priceSource === "comparables" ? null : orNull(price),
         valuation_note: valuationNote, valuation_is_lower_bound: lowerBound,
         marketplace, current_bid: orNull(currentBid), ...risk,
       }, controller.signal);
       setResult(data);
       setTiming(Math.round(performance.now() - started));
+      if (!itemId) {
+        // The analysis saved this item; keep working on the same one.
+        setItem((prev) => ({ ...prev, loadedFrom: data.item_id }));
+        setItemId(String(data.item_id));
+        api.get("/api/items").then(setItems).catch(() => {});
+      }
     } catch (e) {
       if (e.name !== "AbortError") {
         setError(e.message);
@@ -75,6 +113,8 @@ export default function Analyze({ simulated, goTo }) {
 
   function startNew() {
     setItem(BLANK_ITEM);
+    setItemId("");
+    setPriceSource("manual");
     setPrice("");
     setValuationNote("");
     setLowerBound(false);
@@ -122,6 +162,12 @@ export default function Analyze({ simulated, goTo }) {
 
           <h2>2. Item</h2>
           <div className="notice">Screenshot upload and AI identification arrive in Milestone 4. For now, describe the item yourself.</div>
+          <label>Saved item
+            <select value={itemId} onChange={(e) => chooseItem(e.target.value)}>
+              <option value="">New item (not saved yet)</option>
+              {items.map((i) => <option key={i.id} value={i.id}>#{i.id} {i.description} ({i.comparable_count} comparable{i.comparable_count === 1 ? "" : "s"})</option>)}
+            </select>
+          </label>
           <label>Description
             <input value={item.description} onChange={(e) => setField("description", e.target.value)} required autoFocus placeholder="e.g. Men's Levi's 501 jeans, 34x32" />
           </label>
@@ -141,10 +187,28 @@ export default function Analyze({ simulated, goTo }) {
           </label>
 
           <h2>3. Resale value</h2>
+          <label className="check">
+            <input type="radio" name="price-source" checked={priceSource === "comparables"} disabled={!itemId} onChange={() => setPriceSource("comparables")} />
+            Calculate it from this item's comparables {!itemId && <span className="muted">(choose or save an item first)</span>}
+          </label>
+          <label className="check">
+            <input type="radio" name="price-source" checked={priceSource === "manual"} onChange={() => setPriceSource("manual")} />
+            Type in my own conservative price
+          </label>
+          {priceSource === "comparables" && research && (
+            <div className="notice">
+              {research.valuation.ok
+                ? <>Conservative expected sale price from {research.valuation.comparables_used.length} comparables: <b>{usd(research.valuation.expected_sale_price)}</b> ({research.valuation.evidence_quality.toLowerCase()} evidence). Recalculated when you press the button.</>
+                : <>No valuation yet: {research.valuation.reason}</>}
+              {" "}<button type="button" className="link" onClick={() => goTo("research", research.id)}>Open comparables</button>
+            </div>
+          )}
           <div className="row">
-            <label>Conservative expected sale price ($)
-              <input inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Leave empty if unknown" />
-            </label>
+            {priceSource === "manual" ? (
+              <label>Conservative expected sale price ($)
+                <input inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Leave empty if unknown" />
+              </label>
+            ) : <div />}
             <label>Where you will resell
               <select value={marketplace} onChange={(e) => setMarketplace(e.target.value)}>
                 {Object.entries(marketplaces).map(([key, profile]) => (
@@ -153,16 +217,18 @@ export default function Analyze({ simulated, goTo }) {
               </select>
             </label>
           </div>
-          <p className="hint">
+          {priceSource === "manual" && <p className="hint">
             Enter what the item should realistically <b>sell</b> for, based on listings you have looked up — not an asking
             price you hope for, and never the auction's starting bid. Leave it empty if you have no evidence; the result will be SKIP.
-          </p>
+          </p>}
           <label>Where this price comes from (optional)
             <input value={valuationNote} onChange={(e) => setValuationNote(e.target.value)} placeholder="e.g. lowest of 3 similar Vinted listings, minus 20%" />
           </label>
           <label className="check">
             <input type="checkbox" checked={lowerBound} onChange={(e) => setLowerBound(e.target.checked)} />
-            This price assumes the least valuable version this item could plausibly be
+            {priceSource === "comparables"
+              ? "The comparables include the least valuable version this item could plausibly be"
+              : "This price assumes the least valuable version this item could plausibly be"}
           </label>
 
           <h2>4. Risk checks</h2>
@@ -182,7 +248,7 @@ export default function Analyze({ simulated, goTo }) {
         </form>
 
         <div>
-          {result ? <Result r={result} timing={timing} /> : (
+          {result ? <Result r={result} timing={timing} goTo={goTo} /> : (
             <div className="card muted">The maximum bid and BUY / REVIEW / SKIP result will appear here.</div>
           )}
         </div>
@@ -191,7 +257,9 @@ export default function Analyze({ simulated, goTo }) {
   );
 }
 
-function Result({ r, timing }) {
+function Result({ r, timing, goTo }) {
+  const val = r.valuation;
+  const fromComps = val.source === "Comparables";
   const rec = r.recommendation;
   const showMax = rec !== "SKIP" && r.max_bid && r.max_bid.max_bid;
   return (
@@ -253,7 +321,42 @@ function Result({ r, timing }) {
             <tr className="strong"><td>Expected net proceeds</td><td className="num">{usd(r.sale.net_proceeds)}</td></tr>
           </tbody></table>
           {!r.sale.fee_profile_verified && <p className="hint warn-text">⚠ The {r.sale.marketplace} fee figures are unverified placeholders. Check them in Settings.</p>}
-          <p className="hint">Price source: {r.valuation.source}{r.valuation.note ? ` — ${r.valuation.note}` : ""}. No comparables are attached yet (Comparable Research arrives in Milestone 3).</p>
+          <p className="hint">Price source: {val.source}{val.note ? ` — ${val.note}` : ""}.{!fromComps && " No comparables support this price; it is your own estimate."}</p>
+        </div>
+      )}
+
+      {fromComps && (
+        <div className="card">
+          <h2>Price evidence {val.evidence_quality && <span className="tag">{val.evidence_quality}</span>}</h2>
+          {val.ok ? <ul className="checks">{val.steps.map((s) => <li key={s}>{s}</li>)}</ul> : <p className="warn-text">{val.reason}</p>}
+          {val.ok && <p className="hint">List at {usd(val.competitive_listing_price)}; expect {usd(val.expected_sale_price)}. Expected time to sell: {val.expected_holding_days === null ? "unknown" : `about ${val.expected_holding_days} days`}.</p>}
+          {[["Comparables used", val.comparables_used], ["Comparables not used", val.comparables_excluded]].map(([title, list]) => list.length > 0 && (
+            <div key={title}>
+              <h3>{title} ({list.length})</h3>
+              <table><tbody>
+                {list.map((c) => (
+                  <tr key={c.id}>
+                    <td><a href={c.source_url} target="_blank" rel="noreferrer">{c.title}</a>
+                      <div className="hint">{c.marketplace} · {c.listing_status === "ACTIVE" ? "asking price" : c.listing_status === "SOLD" ? "sold" : "auction"} · seen {c.date_observed} · {c.match_confidence_pct}% match — {c.verdict}</div></td>
+                    <td className="num">{usd(c.price)}</td>
+                  </tr>
+                ))}
+              </tbody></table>
+            </div>
+          ))}
+          <p className="hint"><button className="link" onClick={() => goTo("research", r.item_id)}>Open this item's comparables</button></p>
+        </div>
+      )}
+
+      {r.ranking && (
+        <div className="card">
+          <h2>Opportunity score <span className="muted">{r.ranking.score} / 100</span></h2>
+          <table><tbody>
+            {Object.entries(r.ranking.components).map(([name, c]) => (
+              <tr key={name}><td>{RANK_LABELS[name] || name}</td><td className="num">{c.points} / {c.out_of}</td></tr>
+            ))}
+          </tbody></table>
+          <p className="hint">Scored at the maximum bid. For comparing opportunities only; the weights are preliminary.</p>
         </div>
       )}
 

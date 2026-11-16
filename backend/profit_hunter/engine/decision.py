@@ -47,6 +47,10 @@ class DecisionInputs:
 
     preferred_roi: Decimal | None = None
 
+    # Expected days to sell (None = unknown) and the longest acceptable.
+    expected_holding_days: int | None = None
+    max_holding_days: int | None = None
+
 
 @dataclass(frozen=True)
 class Decision:
@@ -70,6 +74,10 @@ def decide(i: DecisionInputs) -> Decision:
         return skip("Product condition cannot be verified.")
     if i.max_bid is None:
         return skip("No reliable valuation: comparable data is missing or unusable.")
+    if (i.expected_holding_days is not None and i.max_holding_days is not None
+            and i.expected_holding_days > i.max_holding_days):
+        return skip(f"Excessive holding risk: expected to take about {i.expected_holding_days} days "
+                    f"to sell; the limit is {i.max_holding_days} days.")
     if not i.shipping_known:
         return skip("Shipping cost is unknown and no conservative estimate is available.")
     if i.max_bid.max_bid is None:

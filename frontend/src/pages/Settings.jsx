@@ -31,9 +31,15 @@ const GROUPS = [
     ["unknown_additional_item_shipping_estimate", "Shipping estimate when a seller's additional-item rate is unknown", "$"],
   ] },
   { title: "Pricing discounts", note: "Preliminary assumptions, to be calibrated from your real sales.", fields: [
-    ["undercut_rate", "Undercut the lowest credible comparable by", "%", "Used from Milestone 3."],
-    ["active_only_discount", "Extra discount when only asking prices are known", "%", "Used from Milestone 3."],
+    ["undercut_rate", "Undercut the lowest credible comparable by", "%"],
+    ["active_only_discount", "Extra discount when only asking prices are known", "%"],
     ["risk_reserve_rate", "Reserve for returns, defects and surprises", "%", "Share of the sale price set aside."],
+  ] },
+  { title: "Comparable evidence rules", note: "Preliminary assumptions. Stricter values mean more items are skipped.", fields: [
+    ["min_credible_comparables", "Fewest credible comparables needed for a valuation", "#"],
+    ["min_comparable_match_confidence", "Lowest match a comparable may have", "%"],
+    ["max_comparable_age_days", "Oldest a comparable may be", "d", "Days since you saw it."],
+    ["max_expected_holding_days", "Longest acceptable time to sell", "d", "Slower items are skipped as holding risk."],
   ] },
   { title: "Selling costs", fields: [
     ["default_outbound_shipping", "Outbound shipping label you pay", "$", "Used unless the marketplace below sets its own."],

@@ -124,6 +124,16 @@ class Settings(BaseModel):
     active_only_discount: Decimal = Decimal("0.15")
     risk_reserve_rate: Decimal = Decimal("0.05")
 
+    # --- Comparable evidence rules (preliminary; calibrate from real sales)
+    # A comparable below this match confidence is not used.
+    min_comparable_match_confidence: Decimal = Decimal("0.80")
+    # A comparable observed longer ago than this is not used.
+    max_comparable_age_days: int = Field(default=90, ge=1)
+    # Fewer credible comparables than this means no valuation (SKIP).
+    min_credible_comparables: int = Field(default=2, ge=1)
+    # Longer expected time to sell than this is rejected as holding risk.
+    max_expected_holding_days: int = Field(default=90, ge=1)
+
     # --- Selling costs ----------------------------------------------------
     # The expected sale price is the TOTAL the buyer pays (item + shipping),
     # so the outbound shipping label is a cost we pay out of it.
@@ -175,7 +185,14 @@ class Settings(BaseModel):
             raise ValueError("must be greater than zero")
         return v
 
-    @field_validator("min_id_confidence")
+    @field_validator("undercut_rate", "active_only_discount", "risk_reserve_rate")
+    @classmethod
+    def _below_one(cls, v: Decimal) -> Decimal:
+        if v >= 1:
+            raise ValueError("must be below 1 (0.05 = 5%)")
+        return v
+
+    @field_validator("min_id_confidence", "min_comparable_match_confidence")
     @classmethod
     def _fraction(cls, v: Decimal) -> Decimal:
         if not (0 <= v <= 1):
