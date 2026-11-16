@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from ..config import Settings
 from ..db.models import ComparableListing, Item
-from ..engine.valuation import Comparable, Valuation, ValuationPolicy, value_item
+from ..engine.valuation import Comparable, Valuation, ValuationPolicy, source_key, value_item
 from ..money import from_cents, opt_from_cents
 from . import utcnow
 
@@ -31,7 +31,7 @@ def to_engine(row: ComparableListing) -> Comparable:
         observed_on=row.date_observed, match_confidence=Decimal(row.match_confidence_pct) / 100,
         variation_status=row.variation_status, shipping_price=opt_from_cents(row.shipping_price_cents),
         included=row.included, user_reason=row.decision_reason, days_to_sell=row.days_to_sell,
-        id=row.id, label=row.title)
+        id=row.id, label=row.title, source_key=source_key(row.source_url))
 
 
 def policy_for(settings: Settings, marketplace: str | None = None) -> ValuationPolicy:
@@ -39,6 +39,8 @@ def policy_for(settings: Settings, marketplace: str | None = None) -> ValuationP
         undercut_rate=settings.undercut_rate, active_only_discount=settings.active_only_discount,
         min_match_confidence=settings.min_comparable_match_confidence,
         max_age_days=settings.max_comparable_age_days, min_credible=settings.min_credible_comparables,
+        buy_match_confidence=settings.buy_comparable_match_confidence,
+        preferred_age_days=settings.preferred_comparable_age_days,
         # Seller pays the label out of the buyer's total -> compare price + shipping.
         include_buyer_shipping=settings.outbound_shipping_for(marketplace) > 0)
 

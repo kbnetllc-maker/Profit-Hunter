@@ -173,7 +173,8 @@ def test_financial_calculation_is_fast():
 
 # ---------------------------------------------------------------- decisions
 def _inputs(**kw):
-    base = dict(id_confidence=Dec("0.95"), min_id_confidence=Dec("0.90"),
+    # These tests exercise the rule engine with a confidence figure treated as validated.
+    base = dict(id_confidence=Dec("0.95"), min_id_confidence=Dec("0.90"), confidence_is_validated=True,
                 max_bid=max_profitable_bid(synth_sale("40.00"), terms(), constraints()))
     base.update(kw)
     return DecisionInputs(**base)

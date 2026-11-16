@@ -198,17 +198,17 @@ def test_sunk_shipping_does_not_justify_an_unprofitable_item(db, settings):
     """Shipping already paid makes the next item cheaper to add, but a weak item is still SKIP."""
     s = make_session(db)
     first = analysis_service.quote_bid(db, settings, s, expected_sale_price=Dec("40"),
-                                       id_confidence=Dec("0.95"), now=NOW)
+                                       id_confidence=None, manually_confirmed=True, now=NOW)
     assert first.max_bid.max_bid == Dec("7.00")  # $5 shipping counts against the first item
     buy(db, settings, s, "5")
 
     second = analysis_service.quote_bid(db, settings, s, expected_sale_price=Dec("40"),
-                                        id_confidence=Dec("0.95"), now=NOW)
+                                        id_confidence=None, manually_confirmed=True, now=NOW)
     assert second.shipping.amount == Dec("0.00") and second.max_bid.max_bid == Dec("10.00")
     assert second.decision.recommendation is Recommendation.BUY
 
     weak = analysis_service.quote_bid(db, settings, s, expected_sale_price=Dec("18"),
-                                      id_confidence=Dec("0.95"), now=NOW)
+                                      id_confidence=None, manually_confirmed=True, now=NOW)
     assert weak.decision.recommendation is Recommendation.SKIP
 
 
@@ -217,9 +217,9 @@ def test_quote_respects_remaining_budget_and_missing_valuation(db, settings):
         buy(db, settings, make_session(db, f"synthetic_seller_{n}"), "10")  # leaves $1.85
     s = make_session(db, "synthetic_other", first_item_shipping=Dec("0"))
     q = analysis_service.quote_bid(db, settings, s, expected_sale_price=Dec("40"),
-                                   id_confidence=Dec("0.95"), now=NOW)
+                                   id_confidence=None, manually_confirmed=True, now=NOW)
     assert q.remaining_budget == Dec("1.85") and q.max_bid.max_bid == Dec("1.00")
 
     none = analysis_service.quote_bid(db, settings, s, expected_sale_price=None,
-                                      id_confidence=Dec("0.95"), now=NOW)
+                                      id_confidence=None, manually_confirmed=True, now=NOW)
     assert none.max_bid is None and none.decision.recommendation is Recommendation.SKIP

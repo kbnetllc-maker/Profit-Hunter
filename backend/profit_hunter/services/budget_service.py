@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from ..config import Settings
@@ -37,14 +38,16 @@ def current_week_start(settings: Settings, now: datetime | None = None) -> date:
 
 
 def get_or_create_week(db: Session, settings: Settings, week_start: date, simulated: bool) -> BudgetWeek:
-    week = db.scalar(select(BudgetWeek).where(BudgetWeek.week_start == week_start,
-                                              BudgetWeek.is_simulated == simulated))
+    find = select(BudgetWeek).where(BudgetWeek.week_start == week_start, BudgetWeek.is_simulated == simulated)
+    week = db.scalar(find)
     if week is None:
-        week = BudgetWeek(week_start=week_start, is_simulated=simulated,
-                          starting_budget_cents=to_cents(settings.weekly_budget),
-                          timezone=settings.timezone, created_at=to_db_time(utcnow()))
-        db.add(week)
-        db.flush()
+        # "Insert unless it exists": two requests arriving together at the
+        # start of a week must not both create it.
+        db.execute(sqlite_insert(BudgetWeek).values(
+            week_start=week_start, is_simulated=simulated,
+            starting_budget_cents=to_cents(settings.weekly_budget), timezone=settings.timezone,
+            created_at=to_db_time(utcnow())).on_conflict_do_nothing())
+        week = db.scalar(find)
     return week
 
 
@@ -132,16 +135,32 @@ def commit_purchase(
     winning_bid: Decimal,
     category: str = "uncategorized",
     expected_net_proceeds: Decimal | None = None,
+    request_id: str | None = None,
     now: datetime | None = None,
 ) -> Purchase:
     """Record a won auction (entered by a person) and reserve its capital.
 
     Refused, with nothing saved, if it would exceed the weekly budget or the
     seller exposure limit. Shipping is the INCREMENTAL shipping for this item.
+
+    Safe against repeats and races: the same ``request_id`` returns the
+    purchase it already created, and the budget check and the insert happen
+    under one database write lock, so two wins recorded at the same moment
+    cannot both spend the same remaining budget.
     """
     if session.status != "ACTIVE":
         raise ValueError("This seller session has ended. Open a new session first.")
     now = now or utcnow()
+    db.commit()  # finish any open read before taking the write lock
+    lock_week = get_or_create_week(db, settings, current_week_start(settings, now), session.is_simulated)
+    db.execute(update(BudgetWeek).where(BudgetWeek.id == lock_week.id)
+               .values(starting_budget_cents=BudgetWeek.starting_budget_cents))
+    if request_id:
+        earlier = db.scalar(select(Purchase).where(Purchase.request_id == request_id))
+        if earlier is not None:
+            db.rollback()
+            return earlier
+    db.refresh(session)
     shipping = sessions_service.next_item_shipping(db, settings, session)
     cost = acquisition_cost(round_cents(winning_bid), PurchaseTerms(
         inbound_shipping=shipping.amount, tax_rate=settings.purchase_tax_rate,
@@ -169,7 +188,7 @@ def commit_purchase(
         est_shipping_cents=to_cents(cost.inbound_shipping), est_tax_cents=to_cents(cost.purchase_tax),
         committed_total_cents=to_cents(cost.total), shipping_was_estimate=shipping.is_estimate,
         expected_net_proceeds_cents=opt_to_cents(expected_net_proceeds),
-        created_at=to_db_time(now),
+        request_id=request_id or None, created_at=to_db_time(now),
     )
     db.add(purchase)
     db.flush()

@@ -21,10 +21,18 @@ class Recommendation(str, Enum):
 
 @dataclass(frozen=True)
 class DecisionInputs:
-    # Identification. Manually confirmed details override the AI confidence.
+    # Identification. A person's confirmation is what counts.
     id_confidence: Decimal | None
     min_id_confidence: Decimal
     manually_confirmed: bool = False
+    # A confidence figure only counts once it has been VALIDATED against
+    # labelled real examples. A model's own stated confidence never is, so
+    # this stays False until a calibration exists.
+    confidence_is_validated: bool = False
+
+    # False when the comparables are credible but below BUY grade (weaker
+    # match or older): the opportunity is then REVIEW at most.
+    evidence_supports_buy: bool = True
 
     # Valuation evidence. ``max_bid`` is None when no valuation could be made.
     max_bid: MaxBidResult | None = None
@@ -96,18 +104,27 @@ def decide(i: DecisionInputs) -> Decision:
         warnings.append("Shipping is a conservative estimate, not a verified charge.")
 
     # --- Identification ---------------------------------------------------
+    usable_confidence = i.id_confidence if i.confidence_is_validated else None
     identified = i.manually_confirmed or (
-        i.id_confidence is not None and i.id_confidence >= i.min_id_confidence)
+        usable_confidence is not None and usable_confidence >= i.min_id_confidence)
     if not identified:
-        conf = "unknown" if i.id_confidence is None else f"{i.id_confidence * 100:.0f}%"
-        msg = (f"Identification confidence {conf} is below the required "
-               f"{i.min_id_confidence * 100:.0f}%.")
+        if usable_confidence is None:
+            msg = "The item's identity has not been confirmed by a person."
+        else:
+            msg = (f"Identification confidence {usable_confidence * 100:.0f}% is below the required "
+                   f"{i.min_id_confidence * 100:.0f}%.")
         if i.valuation_is_lower_bound:
             return Decision(Recommendation.REVIEW, [
                 msg, "A lower-bound valuation exists, so the numbers work if the least "
                      "valuable plausible variation is assumed. Verify the item manually."],
                 warnings, max_bid=ceiling)
         return skip(msg + " No defensible lower-bound valuation exists.")
+
+    if not i.evidence_supports_buy:
+        return Decision(Recommendation.REVIEW, [
+            f"The numbers work up to a maximum bid of ${ceiling:.2f}, but the comparables are not "
+            f"strong enough for BUY. Find closer or more recent comparables, or judge it yourself."],
+            warnings, max_bid=ceiling)
 
     reasons = [f"All requirements satisfied up to a maximum bid of ${ceiling:.2f}.",
                "This is a recommendation only. Human approval is required to purchase."]

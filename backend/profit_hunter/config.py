@@ -153,10 +153,16 @@ class Settings(BaseModel):
     risk_reserve_rate: Decimal = Decimal("0.05")
 
     # --- Comparable evidence rules (preliminary; calibrate from real sales)
-    # A comparable below this match confidence is not used.
+    # A comparable below this match is not used at all.
     min_comparable_match_confidence: Decimal = Decimal("0.80")
+    # BUY needs comparables matching at least this closely. Between the two
+    # thresholds a comparable still counts for the price but supports REVIEW only.
+    buy_comparable_match_confidence: Decimal = Decimal("0.90")
     # A comparable observed longer ago than this is not used.
     max_comparable_age_days: int = Field(default=90, ge=1)
+    # Older than this (but within the maximum) is used for the price with a
+    # warning, and does not count as BUY-grade evidence.
+    preferred_comparable_age_days: int = Field(default=60, ge=1)
     # Fewer credible comparables than this means no valuation (SKIP).
     min_credible_comparables: int = Field(default=2, ge=1)
     # Longer expected time to sell than this is rejected as holding risk.
@@ -229,6 +235,14 @@ class Settings(BaseModel):
         return v
 
     @model_validator(mode="after")
+    def _evidence_tiers_are_ordered(self) -> "Settings":
+        if self.buy_comparable_match_confidence < self.min_comparable_match_confidence:
+            raise ValueError("The BUY match threshold must not be below the minimum match threshold.")
+        if self.preferred_comparable_age_days > self.max_comparable_age_days:
+            raise ValueError("The preferred comparable age must not exceed the maximum age.")
+        return self
+
+    @model_validator(mode="after")
     def _reasoning_is_supported(self) -> "Settings":
         for name in ("vision_primary_reasoning", "vision_review_reasoning"):
             if getattr(self, name) not in self.vision_supported_reasoning:
@@ -275,7 +289,7 @@ class Settings(BaseModel):
             raise ValueError("must be below 1 (0.05 = 5%)")
         return v
 
-    @field_validator("min_id_confidence", "min_comparable_match_confidence")
+    @field_validator("min_id_confidence", "min_comparable_match_confidence", "buy_comparable_match_confidence")
     @classmethod
     def _fraction(cls, v: Decimal) -> Decimal:
         if not (0 <= v <= 1):

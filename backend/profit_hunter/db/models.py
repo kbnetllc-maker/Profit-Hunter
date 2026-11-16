@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (JSON, Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text,
+                        UniqueConstraint)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -72,7 +73,11 @@ class Bundle(Base):
 
 class Purchase(Base):
     __tablename__ = "purchases"
+    __table_args__ = (Index("ux_purchases_request_id", "request_id", unique=True),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Sent by the app with each "record my win". The same id can only ever
+    # create one purchase, so a double click or a repeated request is harmless.
+    request_id: Mapped[str | None] = mapped_column(String(64))
     seller_id: Mapped[int] = mapped_column(ForeignKey("sellers.id"))
     session_id: Mapped[int] = mapped_column(ForeignKey("seller_sessions.id"))
     bundle_id: Mapped[int] = mapped_column(ForeignKey("bundles.id"))

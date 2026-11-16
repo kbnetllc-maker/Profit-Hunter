@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -39,8 +39,28 @@ def make_engine(url: str | None = None) -> Engine:
 
 
 def init_db(engine: Engine) -> None:
+    """Create missing tables, then upgrade an older database in place.
+
+    The upgrade only ADDS: new nullable columns and new indexes. It never
+    drops, rewrites or re-creates anything, so existing rows are untouched.
+    """
     from . import models  # noqa: F401  (registers the tables)
     Base.metadata.create_all(engine)
+    existing = inspect(engine)
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            have = {c["name"] for c in existing.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in have:
+                    continue
+                if not column.nullable:
+                    raise RuntimeError(
+                        f"Cannot add required column {table.name}.{column.name} to an existing "
+                        f"database automatically. New columns must be optional.")
+                kind = column.type.compile(dialect=engine.dialect)
+                conn.execute(text(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {kind}'))
+            for index in table.indexes:
+                index.create(conn, checkfirst=True)
 
 
 def make_session_factory(engine: Engine) -> sessionmaker:

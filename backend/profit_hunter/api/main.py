@@ -8,6 +8,8 @@ browser. The browser only displays numbers; every calculation happens here.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import threading
 from datetime import date, datetime, time, timezone
 from decimal import Decimal
@@ -180,6 +182,18 @@ def write_settings(body: dict, db: Session = Depends(get_db)) -> dict:
     except ValidationError as exc:
         problems = "; ".join(f"{'.'.join(str(x) for x in e['loc'])}: {e['msg']}" for e in exc.errors())
         raise HTTPException(400, f"Settings not saved. {problems}") from None
+    old = settings_service.load_settings(db)
+    old_week, new_week = budget_service.current_week_start(old), budget_service.current_week_start(settings)
+    if old_week != new_week:
+        # Moving the week boundary now would open a fresh budget week and
+        # hide what has already been spent in the current one.
+        held = db.scalar(select(func.count()).select_from(Purchase).where(
+            Purchase.week_start == old_week, Purchase.status != "CANCELED"))
+        if held:
+            raise HTTPException(400, (
+                "Settings not saved. Changing the week start day or timezone now would begin a new "
+                f"budget week and stop counting {held} purchase(s) already made this week. "
+                "Make this change when the current week has no purchases."))
     settings_service.save_settings(db, settings)
     budget_service.apply_budget_to_current_week(db, settings)
     return settings.model_dump(mode="json")
@@ -248,6 +262,8 @@ class PurchaseCreate(BaseModel):
     winning_bid: Decimal = Field(ge=0)
     category: str = "uncategorized"
     expected_net_proceeds: Decimal | None = Field(default=None, ge=0)
+    # Unique per "record my win" action, so a repeat creates nothing new.
+    request_id: str | None = Field(default=None, min_length=8, max_length=64)
 
 
 class PurchaseSettle(BaseModel):
@@ -309,7 +325,7 @@ def record_purchase(session_id: int, body: PurchaseCreate, db: Session = Depends
     p = budget_service.commit_purchase(
         db, settings, get_session_or_404(db, session_id), description=body.description,
         winning_bid=body.winning_bid, category=body.category or "uncategorized",
-        expected_net_proceeds=body.expected_net_proceeds)
+        expected_net_proceeds=body.expected_net_proceeds, request_id=body.request_id)
     return purchase_json(p)
 
 
@@ -422,6 +438,7 @@ def valuation_json(v: Valuation, comps: list[ComparableListing]) -> dict:
 
     def entry(verdict) -> dict:
         return {**comparable_json(rows[verdict.comparable.id]), "used": verdict.used,
+                "buy_grade": verdict.buy_grade,
                 "verdict": verdict.reason, "price_compared": money(verdict.basis_price)}
 
     return {
@@ -433,6 +450,7 @@ def valuation_json(v: Valuation, comps: list[ComparableListing]) -> dict:
         "asking_price_discount_applied": v.asking_price_discount_applied,
         "evidence_quality": v.evidence_quality,
         "sold_count": v.sold_count, "active_count": v.active_count,
+        "buy_grade_count": v.buy_grade_count, "supports_buy": v.supports_buy,
         "expected_holding_days": v.expected_holding_days,
         "steps": list(v.steps), "warnings": list(v.warnings),
         "comparables_used": [entry(x) for x in v.verdicts if x.used],
@@ -610,7 +628,8 @@ def analyze(body: AnalyzeRequest, db: Session = Depends(get_db)) -> dict:
         marketplace=marketplace, authenticity_uncertain=body.authenticity_uncertain,
         suspected_counterfeit=body.suspected_counterfeit,
         condition_unverifiable=body.condition_unverifiable,
-        expected_holding_days=valuation.expected_holding_days if valuation else None)
+        expected_holding_days=valuation.expected_holding_days if valuation else None,
+        evidence_supports_buy=valuation.supports_buy if valuation and valuation.ok else True)
 
     terms = PurchaseTerms(inbound_shipping=q.shipping.amount, tax_rate=settings.purchase_tax_rate,
                           tax_applies_to_shipping=settings.tax_applies_to_shipping)
@@ -690,6 +709,7 @@ def analyze(body: AnalyzeRequest, db: Session = Depends(get_db)) -> dict:
                          else "Not confirmed by a person. AI suggestions do not count as confirmation."),
         },
         "identity_fingerprint": identity_service.fingerprint(db, item),
+        "evidence_fingerprint": evidence_fingerprint(comps) if body.use_comparables else None,
         "valuation": valuation_block,
         "sale": sale_json,
         "shipping": {"amount": money(q.shipping.amount), "is_estimate": q.shipping.is_estimate,
@@ -754,17 +774,56 @@ def opportunities(simulated: bool = False, db: Session = Depends(get_db)) -> lis
     ranked = [a for a in latest.values() if a.recommendation != "SKIP" and a.result.get("ranking")]
     ranked.sort(key=lambda a: Decimal(a.result["ranking"]["score"]), reverse=True)
     # An analysis made before the item's identity changed is no longer an opportunity.
-    return [j for j in (analysis_json(db, a) for a in ranked) if not j["identity_changed"]]
+    # Other stale results stay listed, flagged, after the ones still current.
+    cache: dict = {}
+    out = [j for j in (analysis_json(db, a, cache) for a in ranked) if not j["identity_changed"]]
+    db.commit()
+    return sorted(out, key=lambda j: j["stale"])
+
+
+def evidence_fingerprint(comps: list[ComparableListing]) -> str:
+    return hashlib.sha256(json.dumps([comparable_json(c) for c in comps], sort_keys=True).encode()).hexdigest()
+
+
+_NOT_FINANCIAL = ("vision_", "ai_")
 
 
 def analysis_json(db: Session, a: Analysis, cache: dict | None = None) -> dict:
-    """A saved analysis, flagged when the item's identity has changed since."""
+    """A saved analysis exactly as it was, plus whether it can still be relied on.
+
+    The stored snapshot is never altered. ``stale_reasons`` lists what has
+    changed since: identity, comparables, financial settings, or the budget.
+    A stale result must be recalculated before it is used.
+    """
     cache = {} if cache is None else cache
-    if a.item_id not in cache:
-        cache[a.item_id] = identity_service.fingerprint(db, a.item)
-    then = a.result.get("identity_fingerprint")
-    return {"id": a.id, "item_id": a.item_id, "created_at": iso(a.created_at), **a.result,
-            "identity_changed": then is not None and then != cache[a.item_id]}
+    if "settings" not in cache:
+        cache["settings"] = settings_service.load_settings(db)
+        cache["settings_json"] = cache["settings"].model_dump(mode="json")
+    settings = cache["settings"]
+    r, reasons = a.result, []
+
+    then = r.get("identity_fingerprint")
+    identity_changed = then is not None and then != identity_service.fingerprint(db, a.item)
+    if identity_changed:
+        reasons.append("The item's details or photos have changed.")
+    if r.get("evidence_fingerprint") and r["evidence_fingerprint"] != evidence_fingerprint(
+            valuation_service.comparables_for(db, a.item_id)):
+        reasons.append("The comparables have changed.")
+    saved = (a.inputs or {}).get("settings", {})
+    if any(cache["settings_json"].get(k) != v for k, v in saved.items() if not k.startswith(_NOT_FINANCIAL)):
+        reasons.append("Financial settings have changed.")
+    if a.recommendation != "SKIP":
+        session = db.get(SellerSession, a.session_id)
+        if session.status != "ACTIVE":
+            reasons.append("The seller session has ended.")
+        else:
+            budget_left, seller_left = budget_service.remaining_for_next_purchase(db, settings, session)
+            shipping = sessions_service.next_item_shipping(db, settings, session)
+            if (money(budget_left), money(seller_left), money(shipping.amount)) != (
+                    r.get("remaining_budget"), r.get("seller_exposure_remaining"), r["shipping"]["amount"]):
+                reasons.append("The budget, seller room or shipping for the next item has changed.")
+    return {"id": a.id, "item_id": a.item_id, "created_at": iso(a.created_at), **r,
+            "identity_changed": identity_changed, "stale": bool(reasons), "stale_reasons": reasons}
 
 
 @app.get("/api/analyses")
@@ -772,7 +831,9 @@ def list_analyses(simulated: bool = False, limit: int = 25, db: Session = Depend
     rows = db.scalars(select(Analysis).where(Analysis.is_simulated == simulated)
                       .order_by(Analysis.id.desc()).limit(min(limit, 200))).all()
     cache: dict = {}
-    return [analysis_json(db, a, cache) for a in rows]
+    out = [analysis_json(db, a, cache) for a in rows]
+    db.commit()
+    return out
 
 
 @app.get("/api/analyses/{analysis_id}")

@@ -39,6 +39,7 @@ def quote_bid(
     suspected_counterfeit: bool = False,
     condition_unverifiable: bool = False,
     expected_holding_days: int | None = None,
+    evidence_supports_buy: bool = True,
     now: datetime | None = None,
 ) -> BidQuote:
     """Maximum bid and BUY/REVIEW/SKIP for one item.
@@ -78,5 +79,6 @@ def quote_bid(
         suspected_counterfeit=suspected_counterfeit, condition_unverifiable=condition_unverifiable,
         preferred_roi=settings.preferred_roi,
         expected_holding_days=expected_holding_days,
+        evidence_supports_buy=evidence_supports_buy,
         max_holding_days=settings.max_expected_holding_days))
     return BidQuote(sale, shipping, budget_left, seller_left, result, decision)

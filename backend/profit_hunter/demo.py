@@ -50,7 +50,7 @@ def main() -> None:
 
         start = time.perf_counter()
         q1 = analysis_service.quote_bid(db, settings, session, expected_sale_price=Decimal("40"),
-                                        id_confidence=Decimal("0.95"), current_bid=Decimal("1"))
+                                        id_confidence=None, manually_confirmed=True, current_bid=Decimal("1"))
         ms = (time.perf_counter() - start) * 1000
         show("Item A: $40 expected sale, first item from this seller", q1)
         print(f"  (calculated in {ms:.1f} ms, including database reads)")
@@ -62,16 +62,16 @@ def main() -> None:
 
         show("Item B: same value, shipping now already paid",
              analysis_service.quote_bid(db, settings, session, expected_sale_price=Decimal("40"),
-                                        id_confidence=Decimal("0.95")))
+                                        id_confidence=None, manually_confirmed=True))
         show("Item C: only $18 expected sale (huge ROI, too little profit)",
              analysis_service.quote_bid(db, settings, session, expected_sale_price=Decimal("18"),
-                                        id_confidence=Decimal("0.95")))
+                                        id_confidence=None, manually_confirmed=True))
         show("Item D: identification only 70% confident",
              analysis_service.quote_bid(db, settings, session, expected_sale_price=Decimal("40"),
-                                        id_confidence=Decimal("0.70")))
+                                        id_confidence=None))
         show("Item E: no comparable data",
              analysis_service.quote_bid(db, settings, session, expected_sale_price=None,
-                                        id_confidence=Decimal("0.95")))
+                                        id_confidence=None, manually_confirmed=True))
 
         r = budget_service.budget_report(db, settings, simulated=True)
         print(f"\n=== Simulated budget, week of {r.week_start} ===")
