@@ -134,3 +134,42 @@ class BudgetTransaction(Base):
     commitment_released_cents: Mapped[int] = mapped_column(Integer, default=0)
     note: Mapped[str] = mapped_column(String(300), default="")
     occurred_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class Item(Base):
+    """Something seen at auction. Attributes here are entered or confirmed by a person."""
+
+    __tablename__ = "items"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    description: Mapped[str] = mapped_column(String(500))
+    category: Mapped[str] = mapped_column(String(80), default="")
+    brand: Mapped[str] = mapped_column(String(120), default="")
+    model: Mapped[str] = mapped_column(String(200), default="")
+    size: Mapped[str] = mapped_column(String(60), default="")
+    color: Mapped[str] = mapped_column(String(60), default="")
+    material: Mapped[str] = mapped_column(String(120), default="")
+    era: Mapped[str] = mapped_column(String(60), default="")
+    condition: Mapped[str] = mapped_column(String(120), default="")
+    defects: Mapped[str] = mapped_column(Text, default="")
+    identifiers: Mapped[str] = mapped_column(String(200), default="")
+    seller_transcript: Mapped[str] = mapped_column(Text, default="")
+    manually_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class Analysis(Base):
+    """One saved analysis: the exact inputs (including the settings in force)
+    and the full result, so any past recommendation can be audited. Never edited."""
+
+    __tablename__ = "analyses"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    session_id: Mapped[int] = mapped_column(ForeignKey("seller_sessions.id"))
+    is_simulated: Mapped[bool] = mapped_column(Boolean, default=False)
+    recommendation: Mapped[str] = mapped_column(String(8))
+    max_bid_cents: Mapped[int | None] = mapped_column(Integer)
+    inputs: Mapped[dict] = mapped_column(JSON)
+    result: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+    item: Mapped[Item] = relationship()
