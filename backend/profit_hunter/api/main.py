@@ -8,6 +8,7 @@ browser. The browser only displays numbers; every calculation happens here.
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -31,14 +32,16 @@ from ..services import (analysis_service, budget_service, sessions_service, sett
 
 app = FastAPI(title="Profit Hunter", version="0.1.0")
 _factory = None
+_factory_lock = threading.Lock()
 
 
 def get_db() -> Iterator[Session]:
     global _factory
-    if _factory is None:
-        engine = make_engine()
-        init_db(engine)
-        _factory = make_session_factory(engine)
+    with _factory_lock:  # several first requests can arrive at once
+        if _factory is None:
+            engine = make_engine()
+            init_db(engine)
+            _factory = make_session_factory(engine)
     with _factory() as db:
         yield db
 
@@ -148,7 +151,9 @@ def write_settings(body: dict, db: Session = Depends(get_db)) -> dict:
     except ValidationError as exc:
         problems = "; ".join(f"{'.'.join(str(x) for x in e['loc'])}: {e['msg']}" for e in exc.errors())
         raise HTTPException(400, f"Settings not saved. {problems}") from None
-    return settings_service.save_settings(db, settings).model_dump(mode="json")
+    settings_service.save_settings(db, settings)
+    budget_service.apply_budget_to_current_week(db, settings)
+    return settings.model_dump(mode="json")
 
 
 # --------------------------------------------------------------------------

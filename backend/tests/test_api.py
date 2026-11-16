@@ -44,6 +44,10 @@ def test_settings_round_trip_and_validation(client):
     s["weekly_budget"] = "65.00"
     assert client.put("/api/settings", json=s).json()["weekly_budget"] == "65.00"
     assert client.get("/api/dashboard").json()["starting_budget"] == "65.00"
+    # Changing the budget mid-week applies to the week already in progress.
+    s["weekly_budget"] = "40.00"
+    client.put("/api/settings", json=s)
+    assert client.get("/api/dashboard").json()["starting_budget"] == "40.00"
 
     s["auto_purchase_enabled"] = True
     r = client.put("/api/settings", json=s)

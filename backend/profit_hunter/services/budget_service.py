@@ -48,6 +48,17 @@ def get_or_create_week(db: Session, settings: Settings, week_start: date, simula
     return week
 
 
+def apply_budget_to_current_week(db: Session, settings: Settings, now: datetime | None = None) -> None:
+    """After the weekly budget setting changes, use it for the CURRENT week too.
+
+    Earlier weeks keep the budget they had, so history stays accurate.
+    """
+    week_start = current_week_start(settings, now)
+    for week in db.scalars(select(BudgetWeek).where(BudgetWeek.week_start == week_start)).all():
+        week.starting_budget_cents = to_cents(settings.weekly_budget)
+    db.commit()
+
+
 def _ledger(db: Session, week: BudgetWeek) -> WeekSummary:
     rows = db.scalars(select(BudgetTransaction).where(BudgetTransaction.budget_week_id == week.id)).all()
     entries = [LedgerEntry(TxnKind(r.kind), from_cents(r.amount_cents),
