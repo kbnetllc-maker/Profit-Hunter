@@ -14,8 +14,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Iterator
 
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError, field_validator
 from sqlalchemy import func, select
@@ -25,15 +25,19 @@ from ..config import Settings
 from ..db import init_db, make_engine, make_session_factory
 from zoneinfo import ZoneInfo
 
-from ..db.models import Analysis, ComparableListing, Item, Purchase, SellerSession
+from ..db.models import (AiUsage, Analysis, ComparableListing, Identification, Item, ItemImage, Purchase,
+                         SellerSession)
 from ..db.models import Valuation as ValuationRow
 from ..engine.max_bid import increment_at
 from ..engine.profit import ProfitResult, PurchaseTerms, evaluate
 from ..engine.ranking import WEIGHTS, RankInputs, rank
 from ..engine.valuation import LISTING_STATUSES, VARIATION_STATUSES, Valuation
 from ..money import ZERO, from_cents, opt_from_cents, opt_to_cents, to_cents
-from ..services import (analysis_service, budget_service, sessions_service, settings_service,
-                        to_db_time, utcnow, valuation_service)
+from ..services import (WORKSPACE, ai_ledger, analysis_service, budget_service, identity_service,
+                        image_service, sessions_service, settings_service, to_db_time, utcnow,
+                        valuation_service, vision_service)
+from ..vision import images as vision_images
+from ..vision import schema as vision_schema
 
 app = FastAPI(title="Profit Hunter", version="0.1.0")
 _factory = None
@@ -53,6 +57,26 @@ def get_db() -> Iterator[Session]:
 
 @app.exception_handler(budget_service.BudgetError)
 async def _budget_error(_request, exc):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(vision_service.VisionUnavailable)
+async def _vision_unavailable(_request, exc):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(ai_ledger.AllowanceExceeded)
+async def _allowance(_request, exc):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(ai_ledger.NoPrice)
+async def _no_price(_request, exc):
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
+@app.exception_handler(identity_service.IdentityChanged)
+async def _identity_changed(_request, exc):
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
@@ -406,7 +430,7 @@ def valuation_json(v: Valuation, comps: list[ComparableListing]) -> dict:
         "lowest_comparable_id": v.lowest_comparable_id,
         "competitive_listing_price": money(v.competitive_listing_price),
         "expected_sale_price": money(v.expected_sale_price),
-        "active_only_discount_applied": v.active_only_discount_applied,
+        "asking_price_discount_applied": v.asking_price_discount_applied,
         "evidence_quality": v.evidence_quality,
         "sold_count": v.sold_count, "active_count": v.active_count,
         "expected_holding_days": v.expected_holding_days,
@@ -416,9 +440,31 @@ def valuation_json(v: Valuation, comps: list[ComparableListing]) -> dict:
     }
 
 
-def item_json(item: Item) -> dict:
-    return {"id": item.id, "created_at": iso(item.created_at),
-            **{name: getattr(item, name) for name in ITEM_FIELDS}}
+def item_json(item: Item, db: Session | None = None) -> dict:
+    out = {"id": item.id, "created_at": iso(item.created_at),
+           **{name: getattr(item, name) for name in ITEM_FIELDS}}
+    if db is not None:
+        out["identity"] = identity_service.state(db, item)
+    return out
+
+
+def _apply_details(db: Session, item: Item, body: "ItemDetails", *, source: str) -> None:
+    """Save item details and keep the identity confirmation honest.
+
+    A tick in "I have personally confirmed" is a person's confirmation of the
+    details being saved. When identity details change through a plain edit,
+    any earlier confirmation is withdrawn instead of being carried over.
+    """
+    before = identity_service.fingerprint(db, item) if item.id else None
+    for name, value in body.model_dump(exclude={"manually_confirmed"}).items():
+        setattr(item, name, value)
+    db.flush()
+    changed = before is not None and before != identity_service.fingerprint(db, item)
+    if body.manually_confirmed and not (changed and source == "edit"):
+        identity_service.confirm(db, item, source=source)
+    else:
+        identity_service.revoke(db, item, "Identity details were changed." if changed
+                                else "Confirmation was withdrawn.")
 
 
 def _check_comparable(body: ComparableBody, settings: Settings) -> None:
@@ -446,19 +492,20 @@ def list_items(limit: int = 50, db: Session = Depends(get_db)) -> list[dict]:
 
 @app.post("/api/items")
 def create_item(body: ItemDetails, db: Session = Depends(get_db)) -> dict:
-    item = Item(**body.model_dump(), created_at=to_db_time(utcnow()))
+    item = Item(**body.model_dump(exclude={"manually_confirmed"}), created_at=to_db_time(utcnow()))
     db.add(item)
+    db.flush()
+    _apply_details(db, item, body, source="manual")
     db.commit()
-    return item_json(item)
+    return item_json(item, db)
 
 
 @app.put("/api/items/{item_id}")
 def update_item(item_id: int, body: ItemDetails, db: Session = Depends(get_db)) -> dict:
     item = get_item_or_404(db, item_id)
-    for name, value in body.model_dump().items():
-        setattr(item, name, value)
+    _apply_details(db, item, body, source="edit")
     db.commit()
-    return item_json(item)
+    return item_json(item, db)
 
 
 @app.get("/api/items/{item_id}")
@@ -472,7 +519,7 @@ def read_item(item_id: int, marketplace: str | None = None, db: Session = Depend
     comps = valuation_service.comparables_for(db, item.id)
     v = valuation_service.value(db, settings, item, marketplace=market)
     policy = valuation_service.policy_for(settings, market)
-    return {**item_json(item), "marketplace": market,
+    return {**item_json(item, db), "marketplace": market,
             "price_basis": "price plus shipping" if policy.include_buyer_shipping else "item price only",
             "comparables": [comparable_json(c) for c in comps],
             "valuation": valuation_json(v, comps)}
@@ -537,26 +584,28 @@ def analyze(body: AnalyzeRequest, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(400, "Choose a researched item to value it from comparables.")
 
     if body.item_id is None:
-        item = Item(**body.item.model_dump(), created_at=to_db_time(utcnow()))
+        item = Item(**body.item.model_dump(exclude={"manually_confirmed"}), created_at=to_db_time(utcnow()))
         db.add(item)
+        db.flush()
     else:
         item = get_item_or_404(db, body.item_id)
-        for name, value in body.item.model_dump().items():
-            setattr(item, name, value)
-    db.flush()
+    # The checkbox on the Analyze form is the person's confirmation of exactly these details.
+    _apply_details(db, item, body.item, source="analysis")
+    confirmed = identity_service.is_confirmed(db, item)
 
     valuation: Valuation | None = None
     comps: list[ComparableListing] = []
     price = body.expected_sale_price
     if body.use_comparables:
         comps = valuation_service.comparables_for(db, item.id)
-        valuation = valuation_service.value(db, settings, item, marketplace=marketplace)
+        valuation = valuation_service.value(db, settings, item, marketplace=marketplace,
+                                            identity_confirmed=confirmed)
         price = valuation.expected_sale_price
 
     q = analysis_service.quote_bid(
         db, settings, session, expected_sale_price=price,
         id_confidence=None,  # AI identification arrives in Milestone 4
-        manually_confirmed=body.item.manually_confirmed,
+        manually_confirmed=confirmed,
         valuation_is_lower_bound=body.valuation_is_lower_bound, current_bid=body.current_bid,
         marketplace=marketplace, authenticity_uncertain=body.authenticity_uncertain,
         suspected_counterfeit=body.suspected_counterfeit,
@@ -594,7 +643,7 @@ def analyze(body: AnalyzeRequest, db: Session = Depends(get_db)) -> dict:
         if m.profit_at_max:
             at_max = profit_json(m.profit_at_max)
             if recommendation != "SKIP":
-                ranking = ranking_json(db, settings, session, body, m.profit_at_max, valuation)
+                ranking = ranking_json(db, settings, session, body, m.profit_at_max, valuation, confirmed)
 
     reasons, warnings = list(q.decision.reasons), list(q.decision.warnings)
     if valuation is not None:
@@ -610,7 +659,7 @@ def analyze(body: AnalyzeRequest, db: Session = Depends(get_db)) -> dict:
         snapshot = ValuationRow(
             item_id=item.id, expected_sale_price_cents=opt_to_cents(valuation.expected_sale_price),
             inputs={"comparables": [comparable_json(c) for c in comps], "marketplace": marketplace,
-                    "identity_confirmed": body.item.manually_confirmed,
+                    "identity_confirmed": confirmed,
                     "policy": {k: str(v) for k, v in
                                vars(valuation_service.policy_for(settings, marketplace)).items()},
                     "valued_on": valuation_service.today_for(settings).isoformat()},
@@ -626,18 +675,21 @@ def analyze(body: AnalyzeRequest, db: Session = Depends(get_db)) -> dict:
         }
 
     result = {
-        "item": body.item.model_dump(),
+        "item": {**body.item.model_dump(), "manually_confirmed": confirmed},
         "session": {"id": session.id, "seller": session.seller.username},
         "is_simulated": session.is_simulated,
         "recommendation": recommendation,
         "reasons": reasons, "warnings": warnings,
         "authorizes_purchase": False,
         "identification": {
-            "confidence": None, "manually_confirmed": body.item.manually_confirmed,
+            # No validated confidence score exists. A model's own confidence is
+            # never used; only a person's confirmation counts.
+            "confidence": None, "manually_confirmed": confirmed,
             "required_confidence": str(settings.min_id_confidence),
-            "evidence": ("Details confirmed by the user." if body.item.manually_confirmed
-                         else "Not confirmed. No AI identification has been run."),
+            "evidence": ("Details confirmed by the user." if confirmed
+                         else "Not confirmed by a person. AI suggestions do not count as confirmation."),
         },
+        "identity_fingerprint": identity_service.fingerprint(db, item),
         "valuation": valuation_block,
         "sale": sale_json,
         "shipping": {"amount": money(q.shipping.amount), "is_estimate": q.shipping.is_estimate,
@@ -658,11 +710,11 @@ def analyze(body: AnalyzeRequest, db: Session = Depends(get_db)) -> dict:
         result=result, created_at=to_db_time(utcnow()))
     db.add(record)
     db.commit()
-    return {"id": record.id, "item_id": item.id, "created_at": iso(record.created_at), **result}
+    return analysis_json(db, record)
 
 
 def ranking_json(db: Session, settings: Settings, session: SellerSession, body: AnalyzeRequest,
-                 at_max: ProfitResult, valuation: Valuation | None) -> dict:
+                 at_max: ProfitResult, valuation: Valuation | None, confirmed: bool) -> dict:
     """Score the opportunity at the MAXIMUM bid (its least favourable price)."""
     by_category = budget_service.budget_report(
         db, settings, simulated=session.is_simulated).purchases_by_category
@@ -673,7 +725,7 @@ def ranking_json(db: Session, settings: Settings, session: SellerSession, body: 
         incremental_shipping=at_max.acquisition.inbound_shipping,
         min_net_profit=settings.min_net_profit, preferred_roi=settings.preferred_roi,
         max_all_in_cost=settings.max_all_in_cost,
-        id_confidence=Decimal(1) if body.item.manually_confirmed else Decimal(0),
+        id_confidence=Decimal(1) if confirmed else Decimal(0),
         evidence_quality=valuation.evidence_quality if valuation else None,
         holding_days=valuation.expected_holding_days if valuation else None,
         max_holding_days=settings.max_expected_holding_days,
@@ -701,14 +753,26 @@ def opportunities(simulated: bool = False, db: Session = Depends(get_db)) -> lis
         latest.setdefault(a.item_id, a)
     ranked = [a for a in latest.values() if a.recommendation != "SKIP" and a.result.get("ranking")]
     ranked.sort(key=lambda a: Decimal(a.result["ranking"]["score"]), reverse=True)
-    return [{"id": a.id, "item_id": a.item_id, "created_at": iso(a.created_at), **a.result} for a in ranked]
+    # An analysis made before the item's identity changed is no longer an opportunity.
+    return [j for j in (analysis_json(db, a) for a in ranked) if not j["identity_changed"]]
+
+
+def analysis_json(db: Session, a: Analysis, cache: dict | None = None) -> dict:
+    """A saved analysis, flagged when the item's identity has changed since."""
+    cache = {} if cache is None else cache
+    if a.item_id not in cache:
+        cache[a.item_id] = identity_service.fingerprint(db, a.item)
+    then = a.result.get("identity_fingerprint")
+    return {"id": a.id, "item_id": a.item_id, "created_at": iso(a.created_at), **a.result,
+            "identity_changed": then is not None and then != cache[a.item_id]}
 
 
 @app.get("/api/analyses")
 def list_analyses(simulated: bool = False, limit: int = 25, db: Session = Depends(get_db)) -> list[dict]:
     rows = db.scalars(select(Analysis).where(Analysis.is_simulated == simulated)
                       .order_by(Analysis.id.desc()).limit(min(limit, 200))).all()
-    return [{"id": a.id, "item_id": a.item_id, "created_at": iso(a.created_at), **a.result} for a in rows]
+    cache: dict = {}
+    return [analysis_json(db, a, cache) for a in rows]
 
 
 @app.get("/api/analyses/{analysis_id}")
@@ -716,7 +780,258 @@ def read_analysis(analysis_id: int, db: Session = Depends(get_db)) -> dict:
     a = db.get(Analysis, analysis_id)
     if a is None:
         raise HTTPException(404, "Analysis not found.")
-    return {"id": a.id, "item_id": a.item_id, "created_at": iso(a.created_at), "inputs": a.inputs, **a.result}
+    return {**analysis_json(db, a), "inputs": a.inputs}
+
+
+# --------------------------------------------------------------------------
+# AI identification (evidence and suggestions only; never a decision)
+# --------------------------------------------------------------------------
+def get_image_or_404(db: Session, image_id: int) -> ItemImage:
+    row = db.get(ItemImage, image_id)
+    if row is None or row.workspace_id != WORKSPACE:
+        raise HTTPException(404, "Photo not found.")
+    return row
+
+
+def get_identification_or_404(db: Session, identification_id: int) -> Identification:
+    row = db.get(Identification, identification_id)
+    if row is None or row.workspace_id != WORKSPACE:
+        raise HTTPException(404, "Identification not found.")
+    return row
+
+
+def image_json(row: ItemImage) -> dict:
+    return {"id": row.id, "item_id": row.item_id, "role": row.role, "width": row.width, "height": row.height,
+            "crop": row.crop, "deleted": row.deleted_at is not None, "url": f"/api/images/{row.id}/content"}
+
+
+def usage_json(u: AiUsage) -> dict:
+    return {
+        "id": u.id, "workspace_id": u.workspace_id, "item_id": u.item_id,
+        "identification_id": u.identification_id, "provider": u.provider, "model": u.model,
+        "is_live": u.is_live, "is_retry": u.is_retry, "is_second_look": u.is_second_look,
+        "cache_hit": u.cache_hit, "prompt_version": u.prompt_version, "schema_version": u.schema_version,
+        "preprocessing_version": u.preprocessing_version, "image_count": u.image_count,
+        "image_dimensions": u.image_dimensions, "input_tokens": u.input_tokens,
+        "output_tokens": u.output_tokens, "reasoning_tokens": u.reasoning_tokens,
+        "reserved_cost": ai_ledger.dollars(u.reserved_micros),
+        "actual_cost": None if u.actual_micros is None else ai_ledger.dollars(u.actual_micros),
+        "charged_cost": ai_ledger.dollars(u.charged_micros), "state": u.state, "outcome": u.outcome,
+        "error": u.error, "latency_ms": u.latency_ms, "created_at": iso(u.created_at),
+    }
+
+
+def identification_json(db: Session, row: Identification) -> dict:
+    attempts = db.scalars(select(AiUsage).where(AiUsage.identification_id == row.id).order_by(AiUsage.id)).all()
+    out = {
+        "id": row.id, "item_id": row.item_id, "kind": row.kind, "parent_id": row.parent_id,
+        "provider": row.provider, "model": row.model, "reasoning": row.reasoning, "is_live": row.is_live,
+        "is_mock": not row.is_live, "from_cache": row.from_cache_of is not None,
+        "outcome": row.outcome, "status": row.status, "ok": row.outcome == "OK",
+        "result": row.result, "error": row.error, "image_ids": row.image_ids,
+        "seller_text": row.seller_text, "created_at": iso(row.created_at),
+        "versions": {"prompt": row.prompt_version, "schema": row.schema_version,
+                     "preprocessing": row.preprocessing_version},
+        "attempts": [usage_json(u) for u in attempts],
+        "cost": ai_ledger.dollars(sum(u.charged_micros for u in attempts)),
+        "disagreements": None,
+    }
+    if row.parent_id is not None and row.outcome == "OK":
+        parent = db.get(Identification, row.parent_id)
+        if parent is not None and parent.result:
+            out["disagreements"] = vision_schema.disagreements(parent.result, row.result)
+    return out
+
+
+@app.get("/api/vision/status")
+def vision_status(db: Session = Depends(get_db)) -> dict:
+    settings = settings_service.load_settings(db)
+    t = ai_ledger.totals(db, settings, WORKSPACE)
+    return {
+        **vision_service.mode(settings), "workspace_id": WORKSPACE,
+        "primary_model": settings.vision_primary_model, "review_model": settings.vision_review_model,
+        "allowance": ai_ledger.dollars(t.allowance_micros), "used": ai_ledger.dollars(t.charged_micros),
+        "remaining": ai_ledger.dollars(t.remaining_micros),
+        "unresolved_count": t.unresolved_count, "unresolved": ai_ledger.dollars(t.unresolved_micros),
+        "max_cost_per_item": ai_ledger.dollars(ai_ledger.to_micros(settings.ai_max_cost_per_item)),
+        "max_images": vision_images.MAX_IMAGES_PER_ITEM,
+        "external_notice": ("Photos and the seller text you analyze are sent to OpenAI."
+                            if settings.vision_provider == "openai"
+                            else "Mock mode: nothing leaves this computer and no real identification happens."),
+    }
+
+
+@app.get("/api/vision/usage")
+def vision_usage(limit: int = 50, db: Session = Depends(get_db)) -> list[dict]:
+    rows = db.scalars(select(AiUsage).where(AiUsage.workspace_id == WORKSPACE)
+                      .order_by(AiUsage.id.desc()).limit(min(limit, 500))).all()
+    return [usage_json(u) for u in rows]
+
+
+class ResolveBody(BaseModel):
+    billed: bool
+    actual_cost: Decimal | None = Field(default=None, ge=0)
+
+
+@app.post("/api/vision/usage/{usage_id}/resolve")
+def resolve_usage(usage_id: int, body: ResolveBody, db: Session = Depends(get_db)) -> dict:
+    """A person settles an attempt whose billing was uncertain, after checking the provider's usage page."""
+    row = db.get(AiUsage, usage_id)
+    if row is None or row.workspace_id != WORKSPACE:
+        raise HTTPException(404, "Usage record not found.")
+    actual = None if body.actual_cost is None else ai_ledger.to_micros(body.actual_cost)
+    return usage_json(ai_ledger.resolve(db, row, billed=body.billed, actual_micros=actual))
+
+
+@app.get("/api/items/{item_id}/images")
+def list_images(item_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    return [image_json(r) for r in image_service.active_images(db, get_item_or_404(db, item_id).id)]
+
+
+@app.post("/api/items/{item_id}/images")
+def upload_image(item_id: int, file: UploadFile = File(...), role: str = Form("garment"),
+                 db: Session = Depends(get_db)) -> dict:
+    item = get_item_or_404(db, item_id)
+    data = file.file.read(vision_images.MAX_UPLOAD_BYTES + 1)
+    row = image_service.add_image(db, item, data, role)
+    identity_service.sync(db, item, "A photo was added.")
+    db.commit()
+    return image_json(row)
+
+
+class ImageUpdate(BaseModel):
+    role: str
+    crop: dict | None = None
+
+
+@app.put("/api/images/{image_id}")
+def update_image(image_id: int, body: ImageUpdate, db: Session = Depends(get_db)) -> dict:
+    row = get_image_or_404(db, image_id)
+    if row.deleted_at is not None:
+        raise HTTPException(404, "This photo was deleted.")
+    image_service.update_image(db, row, role=body.role, crop=body.crop)
+    identity_service.sync(db, get_item_or_404(db, row.item_id), "A photo's crop or type was changed.")
+    db.commit()
+    return image_json(row)
+
+
+@app.delete("/api/images/{image_id}")
+def delete_image(image_id: int, db: Session = Depends(get_db)) -> dict:
+    """Delete the photo file permanently. Past identifications keep only its hash."""
+    row = get_image_or_404(db, image_id)
+    if row.deleted_at is None:
+        image_service.delete_image(db, row)
+        identity_service.sync(db, get_item_or_404(db, row.item_id), "A photo was deleted.")
+        db.commit()
+    return {"deleted": image_id}
+
+
+@app.get("/api/images/{image_id}/content")
+def image_content(image_id: int, db: Session = Depends(get_db)) -> Response:
+    row = get_image_or_404(db, image_id)
+    try:
+        data = image_service.read_file(row)
+    except FileNotFoundError:
+        raise HTTPException(404, "This photo is no longer stored.") from None
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+
+
+class IdentifyBody(BaseModel):
+    image_ids: list[int] = Field(min_length=1, max_length=vision_images.MAX_IMAGES_PER_ITEM)
+    seller_text: str = Field(default="", max_length=4000)
+
+
+def _chosen_images(db: Session, item: Item, image_ids: list[int]) -> list[ItemImage]:
+    active = {r.id: r for r in image_service.active_images(db, item.id)}
+    if len(set(image_ids)) != len(image_ids) or any(i not in active for i in image_ids):
+        raise HTTPException(400, "Choose photos that belong to this item and have not been deleted.")
+    return [active[i] for i in image_ids]
+
+
+@app.post("/api/items/{item_id}/identify/estimate")
+def identify_estimate(item_id: int, body: IdentifyBody, db: Session = Depends(get_db)) -> dict:
+    settings = settings_service.load_settings(db)
+    item = get_item_or_404(db, item_id)
+    provider = vision_service.get_provider(settings)
+    return vision_service.estimate(db, settings, provider, item, _chosen_images(db, item, body.image_ids),
+                                   body.seller_text)
+
+
+@app.post("/api/items/{item_id}/identify")
+def identify_item(item_id: int, body: IdentifyBody, db: Session = Depends(get_db)) -> dict:
+    """Ask the configured vision provider for SUGGESTIONS. Confirms nothing."""
+    settings = settings_service.load_settings(db)
+    item = get_item_or_404(db, item_id)
+    row = vision_service.identify(db, settings, item, _chosen_images(db, item, body.image_ids), body.seller_text)
+    return identification_json(db, row)
+
+
+@app.get("/api/items/{item_id}/identifications")
+def list_identifications(item_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    rows = db.scalars(select(Identification).where(
+        Identification.item_id == get_item_or_404(db, item_id).id, Identification.workspace_id == WORKSPACE)
+        .order_by(Identification.id.desc()).limit(20)).all()
+    return [identification_json(db, r) for r in rows]
+
+
+def _second_look_inputs(db: Session, first: Identification) -> tuple[Item, list[ItemImage]]:
+    if first.kind != "PRIMARY" or first.outcome != "OK":
+        raise HTTPException(400, "A second look is only available for a completed first identification.")
+    item = get_item_or_404(db, first.item_id)
+    return item, _chosen_images(db, item, first.image_ids)
+
+
+@app.get("/api/identifications/{identification_id}/second-look/estimate")
+def second_look_estimate(identification_id: int, db: Session = Depends(get_db)) -> dict:
+    settings = settings_service.load_settings(db)
+    first = get_identification_or_404(db, identification_id)
+    item, rows = _second_look_inputs(db, first)
+    return vision_service.estimate(db, settings, vision_service.get_provider(settings), item, rows,
+                                   first.seller_text, vision_service.SECOND_LOOK)
+
+
+class SecondLookBody(BaseModel):
+    # The maximum cost the person was shown and accepted, in micro-dollars.
+    accepted_max_cost_micros: int = Field(ge=0)
+
+
+@app.post("/api/identifications/{identification_id}/second-look")
+def second_look(identification_id: int, body: SecondLookBody, db: Session = Depends(get_db)) -> dict:
+    """Run the review model once, only on a person's request. Both answers are kept."""
+    settings = settings_service.load_settings(db)
+    first = get_identification_or_404(db, identification_id)
+    item, rows = _second_look_inputs(db, first)
+    provider = vision_service.get_provider(settings)
+    est = vision_service.estimate(db, settings, provider, item, rows, first.seller_text, vision_service.SECOND_LOOK)
+    if est["max_cost_micros"] > body.accepted_max_cost_micros:
+        raise HTTPException(409, f"The estimated cost is now up to ${est['max_cost']}, more than you accepted. "
+                                 f"Review the new estimate and ask again.")
+    row = vision_service.identify(db, settings, item, rows, first.seller_text, parent=first, provider=provider)
+    return identification_json(db, row)
+
+
+class ConfirmBody(BaseModel):
+    # The fingerprint of the details and photos the person reviewed.
+    fingerprint: str
+    identification_id: int | None = None
+
+
+@app.post("/api/items/{item_id}/confirm-identity")
+def confirm_identity(item_id: int, body: ConfirmBody, db: Session = Depends(get_db)) -> dict:
+    """A PERSON confirms the item's current details and photos. Nothing else can."""
+    item = get_item_or_404(db, item_id)
+    identity_service.confirm(db, item, source="identify_page", expected_fingerprint=body.fingerprint,
+                             identification_id=body.identification_id)
+    db.commit()
+    return item_json(item, db)
+
+
+@app.post("/api/items/{item_id}/unconfirm-identity")
+def unconfirm_identity(item_id: int, db: Session = Depends(get_db)) -> dict:
+    item = get_item_or_404(db, item_id)
+    identity_service.revoke(db, item, "Confirmation was withdrawn.")
+    db.commit()
+    return item_json(item, db)
 
 
 # Serve the built web interface (frontend/dist) when it exists, so one

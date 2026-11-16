@@ -40,16 +40,24 @@ def test_active_only_takes_undercut_and_asking_price_discount():
     assert v.ok and v.lowest_credible_price == Dec("30.00")
     assert v.competitive_listing_price == Dec("28.50")       # 30 less 5%
     assert v.expected_sale_price == Dec("24.23")             # 28.50 less 15% = 24.225
-    assert v.active_only_discount_applied and v.evidence_quality == WEAK
+    assert v.asking_price_discount_applied and v.evidence_quality == WEAK
     assert (v.sold_count, v.active_count) == (0, 2)
     assert any("asking prices only" in w for w in v.warnings)
 
 
-def test_sold_evidence_removes_the_asking_price_discount():
+def test_lower_asking_price_is_still_discounted_when_a_higher_sale_exists():
     v = value([comp("30"), comp("34"), comp("32", SOLD)])
     assert v.lowest_credible_price == Dec("30.00") and not v.lowest_is_sold
-    assert v.expected_sale_price == v.competitive_listing_price == Dec("28.50")
-    assert not v.active_only_discount_applied and v.evidence_quality == MODERATE
+    assert v.competitive_listing_price == Dec("28.50") and v.expected_sale_price == Dec("24.23")
+    assert v.asking_price_discount_applied and v.evidence_quality == MODERATE
+    assert any("below the completed sales" in w for w in v.warnings)
+    assert not any("asking prices only" in w for w in v.warnings)
+
+
+def test_completed_sale_setting_the_price_takes_no_asking_price_discount():
+    v = value([comp("33"), comp("34"), comp("32", SOLD)])
+    assert v.lowest_is_sold and v.expected_sale_price == v.competitive_listing_price == Dec("30.40")
+    assert not v.asking_price_discount_applied
 
 
 def test_same_listings_are_worth_less_as_asking_prices_than_as_sales():
@@ -122,7 +130,12 @@ def test_price_basis_follows_who_pays_for_shipping():
     comps = [comp("20", shipping_price=Dec("5")), comp("24")]  # second: shipping unknown
     assert value(comps).lowest_credible_price == Dec("20.00")  # buyer pays shipping separately
     total = ValuationPolicy(**{**vars(POLICY), "include_buyer_shipping": True})
-    assert value(comps, policy=total).lowest_credible_price == Dec("24.00")  # 25 vs 24 (+0 unknown)
+    v = value(comps, policy=total)
+    assert v.lowest_credible_price == Dec("24.00")  # 25 vs 24 (+0 unknown)
+    notes = [x.reason for x in v.verdicts]
+    assert "Shipping unknown" not in notes[0] and "Shipping unknown, counted as $0.00" in notes[1]
+    free = value([comp("20", shipping_price=Dec("0")), comp("24", shipping_price=Dec("3"))], policy=total)
+    assert not any("unknown" in x.reason for x in free.verdicts)  # confirmed free is not "unknown"
 
 
 def test_holding_time_is_the_slowest_credible_sale_or_unknown():

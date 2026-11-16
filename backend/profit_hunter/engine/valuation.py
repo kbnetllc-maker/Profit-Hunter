@@ -5,8 +5,10 @@ Pure and deterministic: no database, no network, no AI.
 Rules (all rates come from settings):
   A. Lowest credible comparable price.
   B. Competitive listing price  = A reduced by the undercut rate.
-  C. Conservative expected sale = B, reduced again by the active-only
-     discount when NO credible completed sale exists (asking prices only).
+  C. Conservative expected sale = B, reduced again by the asking-price
+     discount whenever the comparable that sets A is an ASKING price. That
+     covers "asking prices only" and also a lower asking price sitting
+     below a higher completed sale. No discount when a completed sale sets A.
 
 An auction price or starting bid is never evidence of market value.
 """
@@ -74,7 +76,7 @@ class Valuation:
     lowest_is_sold: bool
     competitive_listing_price: Decimal | None  # B
     expected_sale_price: Decimal | None  # C
-    active_only_discount_applied: bool
+    asking_price_discount_applied: bool
     evidence_quality: str | None
     sold_count: int
     active_count: int
@@ -120,6 +122,8 @@ def value_item(comparables: list[Comparable], policy: ValuationPolicy, *,
         else:
             kind = "completed sale" if c.listing_status == SOLD else "asking price"
             note = f"Credible {kind}" + (f": {c.user_reason}" if c.user_reason else ".")
+            if policy.include_buyer_shipping and c.shipping_price is None:
+                note += " Shipping unknown, counted as $0.00."
             verdicts.append(Verdict(c, True, note, round_cents(_basis(c, policy))))
 
     used = [v for v in verdicts if v.used]
@@ -141,8 +145,8 @@ def value_item(comparables: list[Comparable], policy: ValuationPolicy, *,
     lowest = min(used, key=lambda v: (v.basis_price, v.comparable.listing_status != SOLD))
     a = lowest.basis_price
     b = round_cents(a * (1 - policy.undercut_rate))
-    active_only = not sold
-    c_price = round_cents(b * (1 - policy.active_only_discount)) if active_only else b
+    asking_sets_price = lowest.comparable.listing_status == ACTIVE
+    c_price = round_cents(b * (1 - policy.active_only_discount)) if asking_sets_price else b
     if c_price <= 0:
         return fail("The conservative sale price works out to zero.")
 
@@ -153,12 +157,17 @@ def value_item(comparables: list[Comparable], policy: ValuationPolicy, *,
         f"B. Competitive listing price, {policy.undercut_rate * 100:.0f}% below A: ${b:.2f}.",
     ]
     warnings: list[str] = []
-    if active_only:
+    if asking_sets_price and not sold:
         steps.append(f"C. No completed sales, only asking prices, so a further "
                      f"{policy.active_only_discount * 100:.0f}% is taken off: ${c_price:.2f}.")
         warnings.append("Valued from asking prices only. No completed sale supports this price.")
+    elif asking_sets_price:
+        steps.append(f"C. An asking price below the completed sales sets A. Asking prices are not "
+                     f"realized prices, so a further {policy.active_only_discount * 100:.0f}% "
+                     f"is taken off: ${c_price:.2f}.")
+        warnings.append("An asking price below the completed sales sets the value.")
     else:
-        steps.append(f"C. Completed-sale evidence exists, so no asking-price discount: ${c_price:.2f}.")
+        steps.append(f"C. A completed sale sets A, so no asking-price discount: ${c_price:.2f}.")
 
     quality = STRONG if len(sold) >= 2 else MODERATE if sold else WEAK
     days = [v.comparable.days_to_sell for v in sold if v.comparable.days_to_sell is not None]
@@ -171,5 +180,5 @@ def value_item(comparables: list[Comparable], policy: ValuationPolicy, *,
                         "and the lowest one sets the price.")
 
     return Valuation(True, "", a, lowest.comparable.id, lowest.comparable.listing_status == SOLD,
-                     b, c_price, active_only, quality, len(sold), len(active), plausible, holding,
+                     b, c_price, asking_sets_price, quality, len(sold), len(active), plausible, holding,
                      tuple(verdicts), tuple(steps), tuple(warnings))

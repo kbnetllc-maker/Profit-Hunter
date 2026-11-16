@@ -48,6 +48,9 @@ def test_comparables_are_stored_with_every_required_field(client):
         "variation_status": "SAME", "match_confidence_pct": 95, "days_to_sell": None,
         "date_observed": TODAY.isoformat(), "included": True, "decision_reason": "same cut and wash"}
     assert client.get("/api/items").json()[0]["comparable_count"] == 1
+    # Unknown shipping and confirmed free shipping stay different.
+    assert add(client, item, "31.00")["shipping_price"] is None
+    assert add(client, item, "32.00", shipping_price="0")["shipping_price"] == "0.00"
 
 
 def test_invalid_comparables_are_refused(client):
@@ -76,12 +79,14 @@ def test_valuation_updates_as_comparables_are_added_rejected_and_removed(client)
     assert page["price_basis"] == "item price only" and page["marketplace"] == "vinted"
     assert (v["lowest_credible_price"], v["competitive_listing_price"], v["expected_sale_price"]) == (
         "30.00", "28.50", "24.23")
-    assert v["active_only_discount_applied"] is True and v["evidence_quality"] == "WEAK"
+    assert v["asking_price_discount_applied"] is True and v["evidence_quality"] == "WEAK"
     assert v["lowest_comparable_id"] == low["id"] and len(v["steps"]) == 3
 
     add(client, item, "32.00", "SOLD", days_to_sell=12)
     v = client.get(f"/api/items/{item}").json()["valuation"]
-    assert v["expected_sale_price"] == "28.50" and v["expected_holding_days"] == 12
+    # The $30 asking price still sets the value, so it keeps the asking-price discount.
+    assert v["expected_sale_price"] == "24.23" and v["expected_holding_days"] == 12
+    assert v["asking_price_discount_applied"] is True and v["evidence_quality"] == "MODERATE"
 
     # Reject the lowest listing: the next lowest credible price takes over.
     r = client.put(f"/api/comparables/{low['id']}", json={**low, "included": False, "decision_reason": "torn cuff"})

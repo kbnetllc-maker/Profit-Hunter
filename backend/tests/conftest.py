@@ -58,8 +58,10 @@ def constraints(**overrides):
 
 
 @pytest.fixture
-def client():
-    """The web API on a fresh in-memory database."""
+def client(tmp_path, monkeypatch):
+    """The web API on a fresh in-memory database, with a throwaway photo folder and no API key."""
+    monkeypatch.setenv("PROFIT_HUNTER_IMAGES", str(tmp_path / "images"))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     from fastapi.testclient import TestClient
 
     from profit_hunter.api import main

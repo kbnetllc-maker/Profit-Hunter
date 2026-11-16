@@ -10,10 +10,11 @@ current fee page and your own state's tax rate before relying on them.
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class FeeProfile(BaseModel):
@@ -72,6 +73,33 @@ def default_fee_profiles() -> dict[str, FeeProfile]:
                          "expected sale price is the ITEM price only.",
         ),
     }
+
+
+class VisionPrice(BaseModel):
+    """A dated, published price for one vision model (US dollars per million tokens)."""
+
+    model_config = ConfigDict(frozen=True)
+    model: str
+    input_per_million: Decimal = Field(ge=0)
+    output_per_million: Decimal = Field(ge=0)  # reasoning tokens are counted in output tokens
+    effective_from: date
+    verified_on: date | None = None  # when a person or developer last checked the source
+    source: str = ""
+
+
+def default_vision_prices() -> list[VisionPrice]:
+    checked = date(2026, 11, 16)
+    return [
+        VisionPrice(model="gpt-6-luna", input_per_million=Decimal("0.10"), output_per_million=Decimal("0.50"),
+                    effective_from=checked, verified_on=checked,
+                    source="https://developers.openai.com/api/docs/models/gpt-6-luna (Standard rate)"),
+        VisionPrice(model="gpt-6.1-terra", input_per_million=Decimal("1.00"), output_per_million=Decimal("5.00"),
+                    effective_from=checked, verified_on=checked,
+                    source="https://developers.openai.com/api/docs/models/gpt-6.1-terra (Standard rate)"),
+    ]
+
+
+VISION_PROVIDERS = ("mock", "openai")
 
 
 class BidIncrementTier(BaseModel):
@@ -134,6 +162,36 @@ class Settings(BaseModel):
     # Longer expected time to sell than this is rejected as holding risk.
     max_expected_holding_days: int = Field(default=90, ge=1)
 
+    # --- AI identification (vision) ---------------------------------------
+    # These are the OPERATOR'S AI costs. They are tracked separately and are
+    # never part of the inventory purchasing budget above.
+    vision_provider: str = "mock"  # "mock" (no network, no cost) or "openai"
+    # Live calls need this switch AND an API key in the server environment.
+    vision_live_enabled: bool = False
+    vision_primary_model: str = "gpt-6-luna"
+    vision_review_model: str = "gpt-6.1-terra"  # used only by "Request second look"
+    vision_supported_reasoning: list[str] = Field(
+        default_factory=lambda: ["none", "low", "medium", "high", "xhigh", "max"])
+    vision_primary_reasoning: str = "low"
+    vision_review_reasoning: str = "low"
+    # Output limits include reasoning tokens; both are billed as output.
+    vision_primary_max_output_tokens: int = Field(default=2000, ge=200, le=20000)
+    vision_review_max_output_tokens: int = Field(default=1500, ge=200, le=20000)
+    vision_timeout_seconds: int = Field(default=60, ge=5, le=300)
+    vision_max_retries: int = Field(default=1, ge=0, le=1)
+    # Images are scaled down so the longest side is at most this many pixels.
+    vision_image_max_side: int = Field(default=1280, ge=256, le=4096)
+    # Image tokens = 32px patches x multiplier. UNVERIFIED for the two default
+    # models (the vendor's table does not list them), hence the safety factor
+    # applied to every cost reservation until real usage has been measured.
+    vision_image_token_multiplier: Decimal = Decimal("1.2")
+    vision_reservation_safety_factor: Decimal = Decimal("1.5")
+    # Total AI allowance for this workspace. Never resets or tops up by itself.
+    ai_pilot_allowance: Decimal = Decimal("2.00")
+    # Most that one item's analyses may cost in total (second look and retries included).
+    ai_max_cost_per_item: Decimal = Decimal("0.02")
+    vision_prices: list[VisionPrice] = Field(default_factory=default_vision_prices)
+
     # --- Selling costs ----------------------------------------------------
     # The expected sale price is the TOTAL the buyer pays (item + shipping),
     # so the outbound shipping label is a cost we pay out of it.
@@ -156,6 +214,30 @@ class Settings(BaseModel):
             raise ValueError("Human approval cannot be turned off in Profit Hunter v0.1.")
         return v
 
+    @field_validator("vision_provider")
+    @classmethod
+    def _known_provider(cls, v: str) -> str:
+        if v not in VISION_PROVIDERS:
+            raise ValueError(f"must be one of {', '.join(VISION_PROVIDERS)}")
+        return v
+
+    @field_validator("vision_image_token_multiplier", "vision_reservation_safety_factor")
+    @classmethod
+    def _at_least_one(cls, v: Decimal) -> Decimal:
+        if v < 1:
+            raise ValueError("must be at least 1")
+        return v
+
+    @model_validator(mode="after")
+    def _reasoning_is_supported(self) -> "Settings":
+        for name in ("vision_primary_reasoning", "vision_review_reasoning"):
+            if getattr(self, name) not in self.vision_supported_reasoning:
+                raise ValueError(f"{name} must be one of {', '.join(self.vision_supported_reasoning)}")
+        for name in ("vision_primary_model", "vision_review_model"):
+            if not getattr(self, name).strip():
+                raise ValueError(f"{name} must not be empty")
+        return self
+
     @field_validator("timezone")
     @classmethod
     def _valid_timezone(cls, v: str) -> str:
@@ -171,6 +253,7 @@ class Settings(BaseModel):
         "unknown_first_item_shipping_estimate", "unknown_additional_item_shipping_estimate",
         "undercut_rate", "active_only_discount", "risk_reserve_rate",
         "default_outbound_shipping", "default_packaging_cost",
+        "ai_pilot_allowance", "ai_max_cost_per_item",
     )
     @classmethod
     def _non_negative(cls, v: Decimal) -> Decimal:

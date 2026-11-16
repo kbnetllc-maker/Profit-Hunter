@@ -212,3 +212,113 @@ class Valuation(Base):
     inputs: Mapped[dict] = mapped_column(JSON)
     result: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+# --------------------------------------------------------------------------
+# AI identification (Milestone 4). Every row carries a workspace id so the
+# records can later be separated per customer. There is ONE local workspace
+# today; this is preparation, not secure multitenancy.
+# AI costs are stored in MICRO-DOLLARS (millionths of a dollar) because a
+# single request costs a fraction of a cent.
+# --------------------------------------------------------------------------
+class ItemImage(Base):
+    __tablename__ = "item_images"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String(64))
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    role: Mapped[str] = mapped_column(String(16))  # garment | label | detail
+    filename: Mapped[str] = mapped_column(String(80))  # metadata-free copy on disk
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    crop: Mapped[dict | None] = mapped_column(JSON)  # {x, y, w, h} as fractions of the image
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime)  # file removed; row kept for audit
+
+
+class Identification(Base):
+    """One identification result (or failure). Never edited; a second look is a new row."""
+
+    __tablename__ = "identifications"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String(64))
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    kind: Mapped[str] = mapped_column(String(12))  # PRIMARY | SECOND_LOOK
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey("identifications.id"))
+    provider: Mapped[str] = mapped_column(String(40))
+    model: Mapped[str] = mapped_column(String(80))
+    reasoning: Mapped[str] = mapped_column(String(16))
+    prompt_version: Mapped[str] = mapped_column(String(24))
+    schema_version: Mapped[str] = mapped_column(String(24))
+    preprocessing_version: Mapped[str] = mapped_column(String(24))
+    image_ids: Mapped[list] = mapped_column(JSON)
+    image_hashes: Mapped[list] = mapped_column(JSON)  # hashes of the exact bytes sent
+    seller_text: Mapped[str] = mapped_column(Text, default="")
+    cache_key: Mapped[str] = mapped_column(String(64), index=True)
+    from_cache_of: Mapped[int | None] = mapped_column(ForeignKey("identifications.id"))
+    is_live: Mapped[bool] = mapped_column(Boolean, default=False)
+    # OK | REFUSED | TRUNCATED | INVALID | EMPTY | ERROR | UNCERTAIN
+    outcome: Mapped[str] = mapped_column(String(12))
+    # ready_for_review | more_evidence_needed | unable_to_identify | failed
+    status: Mapped[str] = mapped_column(String(24))
+    result: Mapped[dict | None] = mapped_column(JSON)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class AiUsage(Base):
+    """One provider attempt and what it cost. The AI cost ledger."""
+
+    __tablename__ = "ai_usage"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    attempt_key: Mapped[str] = mapped_column(String(36), unique=True)
+    workspace_id: Mapped[str] = mapped_column(String(64), index=True)
+    item_id: Mapped[int | None] = mapped_column(Integer)
+    identification_id: Mapped[int | None] = mapped_column(Integer)
+    provider: Mapped[str] = mapped_column(String(40))
+    model: Mapped[str] = mapped_column(String(80))
+    is_live: Mapped[bool] = mapped_column(Boolean, default=False)  # False = mock, never charged
+    is_retry: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_second_look: Mapped[bool] = mapped_column(Boolean, default=False)
+    cache_hit: Mapped[bool] = mapped_column(Boolean, default=False)
+    prompt_version: Mapped[str] = mapped_column(String(24), default="")
+    schema_version: Mapped[str] = mapped_column(String(24), default="")
+    preprocessing_version: Mapped[str] = mapped_column(String(24), default="")
+    image_count: Mapped[int] = mapped_column(Integer, default=0)
+    image_dimensions: Mapped[list] = mapped_column(JSON, default=list)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    reasoning_tokens: Mapped[int | None] = mapped_column(Integer)
+    reserved_micros: Mapped[int] = mapped_column(Integer, default=0)  # upper bound set aside before the call
+    actual_micros: Mapped[int | None] = mapped_column(Integer)  # from reported usage
+    # What currently counts against the allowance: the reservation while the
+    # outcome is open or unknown, the actual cost once reconciled, 0 if released.
+    charged_micros: Mapped[int] = mapped_column(Integer, default=0)
+    # RESERVED | RECONCILED | RELEASED | UNRESOLVED | BLOCKED | NO_CHARGE
+    state: Mapped[str] = mapped_column(String(12))
+    outcome: Mapped[str] = mapped_column(String(12), default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class IdentityConfirmation(Base):
+    """A person's confirmation of ONE exact set of details and images.
+
+    The fingerprint covers the item, its identity details and its image set.
+    When any of those change, the confirmation no longer matches and is revoked.
+    """
+
+    __tablename__ = "identity_confirmations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String(64))
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    identification_id: Mapped[int | None] = mapped_column(Integer)  # AI suggestion reviewed, if any
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    attributes: Mapped[dict] = mapped_column(JSON)
+    image_versions: Mapped[list] = mapped_column(JSON)
+    source: Mapped[str] = mapped_column(String(24))  # how the person confirmed
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    revoke_reason: Mapped[str] = mapped_column(String(200), default="")

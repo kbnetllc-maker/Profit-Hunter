@@ -3,6 +3,11 @@
 from datetime import datetime, timezone
 
 
+# The single local workspace. Records and caches are scoped by this id so they
+# can be separated per customer later. This is NOT access control.
+WORKSPACE = "local"
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
