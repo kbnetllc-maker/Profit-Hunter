@@ -189,7 +189,7 @@ export default function SettingsPage() {
 
       <section className="card">
         <h2>Marketplace fees</h2>
-        <p className="hint warn-text">⚠ These figures are unverified placeholders. Check each marketplace's current fee page, correct them, then tick "Verified".</p>
+        <p className="hint warn-text">⚠ Rows without a "Verified" tick are unverified placeholders. Check that marketplace's current fee page, correct the row, then tick "Verified".</p>
         <label>Where you normally resell
           <select value={form.default_sale_marketplace} onChange={(e) => set("default_sale_marketplace", e.target.value)}>
             {Object.entries(form.fee_profiles).map(([key, p]) => <option key={key} value={key}>{p.name}</option>)}

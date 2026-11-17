@@ -11,14 +11,13 @@
 
 ## Open decisions for the owner
 
-1. Confirm Vinted's real seller costs (fees, who pays shipping) and correct them in Settings.
+1. Confirm what Vinted's 3% is charged on (item price is assumed) and that the buyer pays shipping.
 2. Typical packaging cost per item (default: $0.50).
 3. Whatnot's bid-step thresholds at higher prices (enter in Settings when known).
-4. Approve live AI spending and supply an OpenAI API key on a paid tier.
-5. Supply 40 to 50 labelled real photo sets for the vision evaluation.
-6. Whether each intended resale marketplace permits the intended selling.
+4. Supply an OpenAI API key on a paid tier when ready (spending is approved; live calls stay off until then).
+5. Review the draft labels of the 40-photo evaluation set before any scored run.
 
-Decided: OpenAI `gpt-6-luna` first look, `gpt-6.1-terra` second look on request; comparable rules 2 credible, 80% floor, 90% and 60 days for BUY grade, 90-day maximum age and holding time; the asking-price discount applies whenever an asking price sets the value. Central time (America/Chicago), week starts Monday, 9% purchase tax on bid + shipping, resell on Vinted, $1 bid steps.
+Decided (17 Nov 2026): live AI spending approved by the owner, on hold until a key exists; Vinted charges a 3% seller fee and permits the intended selling (owner's statement). Decided earlier: OpenAI `gpt-6-luna` first look, `gpt-6.1-terra` second look on request; comparable rules 2 credible, 80% floor, 90% and 60 days for BUY grade, 90-day maximum age and holding time; the asking-price discount applies whenever an asking price sets the value. Central time (America/Chicago), week starts Monday, 9% purchase tax on bid + shipping, resell on Vinted, $1 bid steps.
 
 ## Later (not in v0.1; each needs separate authorization and review)
 

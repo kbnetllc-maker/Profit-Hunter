@@ -178,12 +178,12 @@ None of the following exists. Passing tests do not make it ready.
 
 | Area | Status |
 |---|---|
-| Real accuracy | Untested. Needs the 40 to 50 photo evaluation, then a larger one |
+| Real accuracy | Untested. A 40-photo public set is imported with draft labels; it needs the owner's label review, a live run, then a larger test on the owner's own item photos |
 | Login, permissions, tenant isolation | Not built. Must exist and be tested before a second user |
 | Per-customer quotas and rate limits | Not built. The single allowance is a pilot guard. Unlimited scans would not be viable at any price in the table above |
 | Abuse controls | Not built: upload flooding, oversized batches, shared accounts, prompt-injection probing |
 | Marketplace data | Unresolved. All comparables are typed in by the user. No right to collect, store or resell any marketplace's listing data has been established |
-| Resale marketplace rules | Unresolved. Whether each marketplace permits the intended selling, and its real fees, are unverified placeholders (see README) |
+| Resale marketplace rules | Vinted: permitted, 3% seller fee, per the owner (not independently checked). Other marketplaces: unverified placeholders |
 | Privacy | No privacy policy, data-deletion process, retention schedule, or review of the provider's data terms |
 | Payments and subscriptions | Not built |
 | Hosting | Local only. SQLite and local files would need replacing for multi-user use |

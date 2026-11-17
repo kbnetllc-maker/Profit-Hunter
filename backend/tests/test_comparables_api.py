@@ -110,10 +110,11 @@ def test_analysis_from_comparables_explains_and_preserves_its_evidence(client):
 
     assert a["recommendation"] == "BUY" and a["authorizes_purchase"] is False and a["item_id"] == item
     assert a["valuation"]["source"] == "Comparables" and a["valuation"]["expected_sale_price"] == "24.23"
-    # $24.23 - $0.50 packaging - $1.21 risk reserve = $22.52 (default, unverified Vinted assumptions).
-    assert a["sale"]["expected_sale_price"] == "24.23" and a["sale"]["net_proceeds"] == "22.52"
-    assert a["max_bid"]["max_bid"] == "5.00" and a["at_max_bid"]["all_in_cost"] == "10.90"
-    assert a["at_max_bid"]["net_profit"] == "11.62"
+    # $24.23 - $0.73 fee (3%) - $0.50 packaging - $1.21 risk reserve = $21.79 net.
+    assert a["sale"]["expected_sale_price"] == "24.23" and a["sale"]["net_proceeds"] == "21.79"
+    # A $5 bid would cost $10.90 for $10.89 profit: just under 100% ROI. So the maximum is $4.
+    assert a["max_bid"]["max_bid"] == "4.00" and a["at_max_bid"]["all_in_cost"] == "9.81"
+    assert a["at_max_bid"]["net_profit"] == "11.98"
     assert len(a["valuation"]["comparables_used"]) == 2 and len(a["valuation"]["comparables_excluded"]) == 1
     assert any("asking prices only" in w for w in a["warnings"])
     assert any("Time to sell is unknown" in w for w in a["warnings"])

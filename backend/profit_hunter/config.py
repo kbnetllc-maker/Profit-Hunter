@@ -68,9 +68,12 @@ def default_fee_profiles() -> dict[str, FeeProfile]:
         ),
         "vinted": FeeProfile(
             name="Vinted",
+            percent_rate=Decimal("0.03"),
             seller_paid_outbound_shipping=Decimal("0"),
-            notes=note + " Assumes no seller fees and that the buyer pays shipping, so the "
-                         "expected sale price is the ITEM price only.",
+            verified=True,
+            notes="3% seller fee as stated by the owner on 2026-11-17; not checked against Vinted's "
+                  "fee page by the developer. Assumes the fee is charged on the item price and that "
+                  "the buyer pays shipping, so the expected sale price is the ITEM price only.",
         ),
     }
 

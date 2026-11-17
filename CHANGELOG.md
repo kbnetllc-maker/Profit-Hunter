@@ -2,6 +2,13 @@
 
 ## Unreleased (v0.1)
 
+### 2026-11-17
+- Vinted default fee is now 3% of the item price (owner's figure), marked verified. Existing saved settings are not changed.
+- Photos in MPO format (written by many phones) are accepted, using the main frame.
+- Fixed: an embedded JPEG text comment or color profile could survive metadata removal. Preprocessing version is now `pre-2`.
+- Imported the "public-starter-40" evaluation set locally (not in git) and ran a mock dry run. No live calls.
+- Recorded the owner's approval of live API spending; live calls remain off until a key is supplied.
+
 ### Milestone 4 — AI identification, and a financial audit
 - Identify Item page: upload and crop 1 to 3 photos, add seller text, get suggested details with a basis and source for each, correct them, confirm.
 - Provider-independent vision interface with a mock provider and an OpenAI adapter (Responses API, structured output). Live calls are off by default and have never been made.

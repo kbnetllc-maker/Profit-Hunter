@@ -4,6 +4,14 @@ Measures how well the vision model reads real clothing photos, and what it
 really costs. **No real evaluation has been run yet.** Accuracy is untested
 until you supply labelled photos and approve the spending.
 
+## Imported set: public-starter-40
+
+Forty public real photos (24 dev, 16 held out) with **draft** labels, kept at
+`backend/eval/public-starter-40/` and not committed. Review the labels before
+any scored run. It has one photo per example and only two specific styles, so
+it tests brand evidence and abstention, not multi-photo matching or style
+accuracy. Keep its `ATTRIBUTION_AND_LICENSES.txt` with the photos.
+
 ## What you need to provide
 
 40 to 50 photos sets of real items you can identify with certainty, in a

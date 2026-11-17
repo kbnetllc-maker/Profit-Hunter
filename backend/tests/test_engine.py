@@ -41,7 +41,8 @@ def test_tiered_and_processing_fee_profiles():
     assert marketplace_fees(profiles["poshmark"], Dec("14.00")) == (Dec("2.95"), Dec("0.00"))
     assert marketplace_fees(profiles["poshmark"], Dec("15.00")) == (Dec("3.00"), Dec("0.00"))
     assert marketplace_fees(profiles["depop"], Dec("20.00")) == (Dec("0.00"), Dec("1.11"))
-    assert marketplace_fees(profiles["vinted"], Dec("20.00")) == (Dec("0.00"), Dec("0.00"))
+    assert marketplace_fees(profiles["vinted"], Dec("20.00")) == (Dec("0.60"), Dec("0.00"))  # 3%, owner-stated
+    assert profiles["vinted"].verified and not profiles["ebay"].verified
 
 
 def test_fee_on_buyer_paid_shipping_depends_on_profile():

@@ -37,11 +37,12 @@ def test_settings_round_trip_and_validation(client):
 def test_analyze_gives_full_explanation_and_is_saved(client):
     sid = new_session(client)["id"]
     a = analyze(client, sid, current_bid="1")
-    # Vinted default (unverified assumption): $20 - $0.50 packaging - $1.00 risk = $18.50 net.
+    # Vinted default: $20 - $0.60 fee (3%) - $0.50 packaging - $1.00 risk reserve = $17.90 net.
     assert a["recommendation"] == "BUY" and a["authorizes_purchase"] is False
-    assert a["sale"]["net_proceeds"] == "18.50"
+    assert a["sale"]["net_proceeds"] == "17.90" and a["sale"]["marketplace_fee"] == "0.60"
+    assert a["sale"]["fee_profile_verified"] is True
     assert a["max_bid"]["max_bid"] == "3.00" and a["max_bid"]["binding_constraints"] == ["min_roi"]
-    assert a["at_max_bid"]["all_in_cost"] == "8.72" and a["at_max_bid"]["net_profit"] == "9.78"
+    assert a["at_max_bid"]["all_in_cost"] == "8.72" and a["at_max_bid"]["net_profit"] == "9.18"
     assert a["next_bid"] == "2.00" and a["at_next_bid"]["all_in_cost"] == "7.63"
     assert a["remaining_budget"] == "50.00" and a["shipping"]["amount"] == "5.00"
 

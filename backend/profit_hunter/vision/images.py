@@ -9,9 +9,10 @@ from decimal import Decimal
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-PREPROCESSING_VERSION = "pre-1"
+PREPROCESSING_VERSION = "pre-2"  # pre-2: embedded comments and profiles removed; MPO accepted
 
-ALLOWED_FORMATS = {"JPEG", "PNG", "WEBP"}
+# MPO is the multi-picture JPEG many phones and cameras write; its first frame is the photo.
+ALLOWED_FORMATS = {"JPEG", "MPO", "PNG", "WEBP"}
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 MAX_PIXELS = 50_000_000  # refuse decompression bombs
 MIN_SIDE = 64
@@ -32,8 +33,12 @@ def sha256(data: bytes) -> str:
 
 def _encode(img: Image.Image, quality: int) -> bytes:
     out = io.BytesIO()
-    # A fresh save writes no EXIF, GPS, ICC or other metadata.
-    img.save(out, format="JPEG", quality=quality, subsampling=0, optimize=False)
+    # Copy the pixels into a blank image so nothing travels with them: no EXIF,
+    # GPS, XMP, ICC profile or embedded text comment (Pillow would otherwise
+    # carry a JPEG comment over into the new file).
+    bare = Image.new("RGB", img.size)
+    bare.paste(img)
+    bare.save(out, format="JPEG", quality=quality, subsampling=0, optimize=False)
     return out.getvalue()
 
 
@@ -59,7 +64,9 @@ def clean_upload(data: bytes) -> tuple[bytes, int, int]:
         if fmt not in ALLOWED_FORMATS:
             raise ImageRejected("Only JPEG, PNG and WEBP images are accepted.")
         img = Image.open(io.BytesIO(data))
-        if getattr(img, "is_animated", False):
+        if fmt == "MPO":
+            img.seek(0)  # the main photo; extra embedded frames are dropped
+        elif getattr(img, "is_animated", False):
             raise ImageRejected("Animated images are not accepted.")
         img = ImageOps.exif_transpose(img)  # apply the camera rotation, then drop the metadata
         img.load()

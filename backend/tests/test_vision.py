@@ -191,6 +191,34 @@ def test_metadata_is_removed_and_file_names_are_never_user_controlled(client, tm
     assert not Image.open(io.BytesIO(served.content)).getexif()
 
 
+def test_embedded_comments_and_profiles_do_not_survive(client):
+    """Found with real photos: a JPEG text comment was carried into the cleaned copy."""
+    item = new_item(client)
+    raw = picture(fmt="JPEG", comment=b"SYNTHETIC SOURCE CAPTION brand=Secret", icc_profile=b"SYNTHETIC-ICC" * 20)
+    assert b"SYNTHETIC SOURCE CAPTION" in raw
+    img = upload(client, item, raw, name="x.jpg")
+    served = client.get(img["url"]).content
+    assert b"SYNTHETIC SOURCE CAPTION" not in served and b"SYNTHETIC-ICC" not in served
+    info = Image.open(io.BytesIO(served)).info
+    assert not {"comment", "icc_profile", "exif", "xmp"} & set(info)
+    sent, *_ = images.prepare(served, {"x": 0, "y": 0, "w": 0.5, "h": 0.5}, 320)
+    assert b"SYNTHETIC" not in sent and "comment" not in Image.open(io.BytesIO(sent)).info
+
+
+def test_multi_picture_phone_photos_are_accepted_using_the_main_frame(client):
+    """Found with real photos: MPO, the multi-picture JPEG many phones write, was refused."""
+    out = io.BytesIO()
+    main, extra = Image.new("RGB", (640, 480), (10, 120, 200)), Image.new("RGB", (640, 480), (250, 0, 0))
+    main.save(out, format="MPO", save_all=True, append_images=[extra])
+    assert Image.open(io.BytesIO(out.getvalue())).format == "MPO"
+    item = new_item(client)
+    img = upload(client, item, out.getvalue(), name="phone.jpg")
+    stored = Image.open(io.BytesIO(client.get(img["url"]).content))
+    assert stored.format == "JPEG" and getattr(stored, "n_frames", 1) == 1
+    r, g, b = stored.getpixel((320, 240))
+    assert b > 150 and r < 60                                     # the main frame, not the extra one
+
+
 def test_crop_scaling_and_deletion(client, tmp_path):
     item = new_item(client)
     img = upload(client, item, picture(3000, 2000))

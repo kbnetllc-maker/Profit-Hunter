@@ -31,7 +31,6 @@ def main() -> int:
 
     examples = [json.loads(line) for line in args.labels.read_text().splitlines() if line.strip()]
     out = args.out or args.labels.parent / "runs" / args.split
-    out.mkdir(parents=True, exist_ok=True)
     os.environ["PROFIT_HUNTER_DB"] = str(out / "eval.db")
     os.environ["PROFIT_HUNTER_IMAGES"] = str(out / "images")
 
@@ -66,6 +65,7 @@ def main() -> int:
         provider = MockProvider(review_model=settings.vision_review_model)
         print("MOCK RUN: this checks that the harness works. It measures NOTHING about accuracy.\n")
 
+    out.mkdir(parents=True, exist_ok=True)
     engine = make_engine()
     init_db(engine)
     records = []

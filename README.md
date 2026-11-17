@@ -137,7 +137,7 @@ python -m profit_hunter.demo
 | AI identification | `vision/`, `services/vision_service.py`, `services/ai_ledger.py`, `services/identity_service.py` | Photo checks, mock and OpenAI providers, cost limits, cache, bound confirmation |
 | Evaluation | `backend/eval/`, `vision/evaluation.py` | Harness for scoring a real model on labelled photos (not yet run) |
 | Web app | `frontend/src/` | Dashboard, Analyze Item, Identify Item, Comparable Research, Seller Sessions, Settings |
-| Tests | `backend/tests/`, `e2e/` | 393 backend tests and 5 browser tests, synthetic data |
+| Tests | `backend/tests/`, `e2e/` | 395 backend tests and 5 browser tests, synthetic data |
 
 ## How the numbers are defined
 
@@ -189,14 +189,14 @@ accuracy is untested.** Details: [docs/VISION.md](docs/VISION.md).
 
 - AI identification has never run against a real model. Its accuracy, token use and cost are unmeasured.
 - No inventory yet (Milestone 5). Realized profit is not tracked yet.
-- **Resale marketplace eligibility is unresolved.** It has not been checked whether Vinted (or any other marketplace) permits the selling you intend, in your region, for the brands and categories you buy.
+- **Resale marketplace rules are the owner's statement, not independently checked.** The owner states that Vinted permits the intended selling and charges a 3% seller fee (17 November 2026). The app assumes that fee is charged on the item price and that the buyer pays shipping. Other marketplaces remain unchecked.
 - Comparables are entered by hand. Nothing is looked up automatically, and the app cannot check that a link, price or "sold" status you type is true.
 - The match percentage of a comparable is your own judgement.
 - The opportunity score's weights are fixed in code and preliminary. The score is saved with each analysis and is not recalculated when the budget changes afterwards.
 - The Comparable Research page values an item for your default resale marketplace only; Analyze Item lets you choose another.
 - An item counts as identified only when you confirm it yourself.
 - The web app has no automated browser tests yet; it was checked by a scripted browser walkthrough during development.
-- **Default marketplace fees and shipping estimates are unverified placeholders**, including the assumption that Vinted charges sellers nothing and the buyer pays shipping. Check them against each marketplace's current fee page before trusting any result.
+- **Fees for eBay, Poshmark, Mercari and Depop, and all shipping estimates, are unverified placeholders.** Check them against each marketplace's current fee page before reselling there. The Vinted fee (3%) is the owner's figure.
 - Whatnot's larger bid steps at higher prices are not known; add them in Settings when you learn them.
 - When a seller's additional-item shipping is unknown, a flat $3.00 estimate is used. Weight-based shipping estimates are not implemented.
 - Seller exposure is counted per budget week.
