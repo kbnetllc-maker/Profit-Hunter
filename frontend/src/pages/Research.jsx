@@ -1,15 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, orNull, usd } from "../api.js";
 
-const today = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-};
 const BLANK_ITEM = { description: "", category: "", brand: "", model: "", size: "", condition: "" };
-const blankComparable = () => ({
+// "Today" comes from the server (your configured timezone), not the browser's clock.
+const blankComparable = (today = "") => ({
   marketplace: "", title: "", source_url: "", listing_status: "ACTIVE", price: "", shipping_price: "",
   condition: "", size: "", variation: "", variation_status: "SAME", match_confidence_pct: "",
-  days_to_sell: "", date_observed: today(), included: true, decision_reason: "",
+  days_to_sell: "", date_observed: today, included: true, decision_reason: "",
 });
 const STATUS_LABEL = { ACTIVE: "For sale (asking price)", SOLD: "Sold (completed sale)", AUCTION: "Auction / starting bid" };
 const VARIATION_LABEL = { SAME: "Yes, the same version", PLAUSIBLE: "Not sure — my item could be this version", DIFFERENT: "No, a different version" };
@@ -31,7 +28,10 @@ export default function Research({ goTo, param }) {
   }), []);
   const loadPage = useCallback((id) => {
     if (!id) return setPage(null);
-    return api.get(`/api/items/${id}`).then(setPage).catch((e) => setError(e.message));
+    return api.get(`/api/items/${id}`).then((data) => {
+      setPage(data);
+      setForm((f) => (f.date_observed ? f : { ...f, date_observed: data.today }));
+    }).catch((e) => setError(e.message));
   }, []);
 
   useEffect(() => {
@@ -82,7 +82,7 @@ export default function Research({ goTo, param }) {
       : api.post(`/api/items/${itemId}/comparables`, toBody(form))));
     if (ok) {
       setEditing(null);
-      setForm(blankComparable());
+      setForm(blankComparable(page.today));
     }
   }
 
@@ -217,7 +217,7 @@ export default function Research({ goTo, param }) {
               <label>Marketplace<input value={form.marketplace} onChange={set("marketplace")} required placeholder="e.g. Vinted" /></label>
               <label className="span-2">Listing title<input value={form.title} onChange={set("title")} required /></label>
               <label className="span-2">Link to the listing<input type="url" value={form.source_url} onChange={set("source_url")} required placeholder="https://…" /></label>
-              <label>Date you saw it<input type="date" value={form.date_observed} max={today()} onChange={set("date_observed")} required /></label>
+              <label>Date you saw it<input type="date" value={form.date_observed} max={page.today} onChange={set("date_observed")} required /></label>
               <label>Listing type
                 <select value={form.listing_status} onChange={set("listing_status")}>
                   {Object.entries(STATUS_LABEL).map(([k, label]) => <option key={k} value={k}>{label}</option>)}
@@ -243,7 +243,7 @@ export default function Research({ goTo, param }) {
             </label>
             <div className="actions">
               <button className="primary" type="submit">{editing ? "Save changes" : "Add comparable"}</button>
-              {editing && <button type="button" onClick={() => { setEditing(null); setForm(blankComparable()); }}>Cancel edit</button>}
+              {editing && <button type="button" onClick={() => { setEditing(null); setForm(blankComparable(page.today)); }}>Cancel edit</button>}
             </div>
           </form>
         </>

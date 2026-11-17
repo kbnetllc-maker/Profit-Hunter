@@ -538,6 +538,8 @@ def read_item(item_id: int, marketplace: str | None = None, db: Session = Depend
     v = valuation_service.value(db, settings, item, marketplace=market)
     policy = valuation_service.policy_for(settings, market)
     return {**item_json(item, db), "marketplace": market,
+            # "Today" in the configured timezone, so the form and the server agree on dates.
+            "today": valuation_service.today_for(settings).isoformat(),
             "price_basis": "price plus shipping" if policy.include_buyer_shipping else "item price only",
             "comparables": [comparable_json(c) for c in comps],
             "valuation": valuation_json(v, comps)}

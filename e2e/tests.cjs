@@ -5,7 +5,6 @@ const path = require("node:path");
 const nav = (page, name) => page.locator(".sidebar").getByRole("button", { name, exact: true }).click();
 const field = (scope, label) => scope.locator("label", { hasText: label }).locator("input, select, textarea").first();
 const main = (page) => page.locator("main").innerText();
-const today = () => new Date().toLocaleDateString("en-CA");
 
 async function settings(page, base, changes) {
   const s = await (await page.request.get(`${base}/api/settings`)).json();

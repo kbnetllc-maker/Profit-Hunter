@@ -77,6 +77,7 @@ def test_valuation_updates_as_comparables_are_added_rejected_and_removed(client)
     page = client.get(f"/api/items/{item}").json()
     v = page["valuation"]
     assert page["price_basis"] == "item price only" and page["marketplace"] == "vinted"
+    assert page["today"] == TODAY.isoformat()      # the form takes its date from the server's timezone
     assert (v["lowest_credible_price"], v["competitive_listing_price"], v["expected_sale_price"]) == (
         "30.00", "28.50", "24.23")
     assert v["asking_price_discount_applied"] is True and v["evidence_quality"] == "WEAK"

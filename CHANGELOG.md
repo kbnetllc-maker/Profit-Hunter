@@ -7,6 +7,7 @@
 - Photos in MPO format (written by many phones) are accepted, using the main frame.
 - Fixed: an embedded JPEG text comment or color profile could survive metadata removal. Preprocessing version is now `pre-2`.
 - Imported the "public-starter-40" evaluation set locally (not in git) and ran a mock dry run. No live calls.
+- Fixed: the comparable form used the browser's date, so near midnight a browser ahead of the configured timezone was refused with "date cannot be in the future". The form now uses the server's date. Found by the browser test when the date rolled over.
 - Recorded the owner's approval of live API spending; live calls remain off until a key is supplied.
 
 ### Milestone 4 — AI identification, and a financial audit
